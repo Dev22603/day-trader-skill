@@ -186,6 +186,16 @@ oversold bounce).
 - Never print a P&L, a return or a profit figure.
 - A hit is stale once the price has moved on. Re-run before acting on it.
 
+## Indian market (NSE)
+
+When every symbol in the list ends in `.NS` the scan runs on the NSE clock:
+India time, 9:15 to 15:30, the NSE's 2026 holiday list, the opening range from
+9:15, no new entries after 15:00. The symbols go to Yahoo unchanged.
+`scan.py universe` only knows the US lists, so give the NSE list yourself:
+`--symbols RELIANCE.NS,TCS.NS`, `--watchlist FILE`, or a `trader/universe.txt`
+with one `.NS` symbol a line. A list that mixes `.NS` and US symbols is
+refused: scan them separately.
+
 ## What it never does
 
 It never places, sizes or checks an order, never says which stock to buy,

@@ -120,6 +120,33 @@ An example, the trade in the reel: Tesla, Monday October 19 2026, real data.
 9. **`/trader-alerts`** rings on the stop, the target and at 3:55 PM to
    flatten whatever is still open.
 
+## Indian market (NSE)
+
+A symbol ending in `.NS` (`RELIANCE.NS`, `TCS.NS`) goes to Yahoo unchanged and
+runs on NSE rules. Every other symbol works exactly as described above.
+
+- India time (IST), the continuous session: 9:15 AM to 3:30 PM. The pre-open
+  and post-close sessions are left out.
+- The NSE's 2026 trading holidays. For a later year the tools say the list is
+  unknown: check nseindia.com.
+- The opening range starts at 9:15, new entries from 09:30 to 15:00, and every
+  day trade is flat by 15:15. To change one of those three times, add an
+  `"nse"` block to `trader/config.json`, for example
+  `"nse": {"flat_by": "15:10"}`.
+
+```bash
+python3 trader-alerts/alerts.py clock RELIANCE.NS                      # is the NSE open?
+python3 trader-scanner/scan.py orb --symbols RELIANCE.NS,TCS.NS,INFY.NS
+python3 trader-entry/entry.py check RELIANCE.NS --write
+python3 trader-exit/exit.py plan --stop or-mid --target 1R --write     # flat by 15:15 IST
+```
+
+`scan.py universe` only downloads the US lists: pass your own `.NS` symbols.
+The broker connector is Alpaca, a US broker, so placing an NSE order needs an
+Indian broker's connector. The analyst, the Pelosi tracker and the news
+skill's SEC filings are US-only. Prices still print with `$`: the numbers are
+in your account's currency.
+
 ## The tools
 
 All standard-library Python. The data tools read public endpoints and are

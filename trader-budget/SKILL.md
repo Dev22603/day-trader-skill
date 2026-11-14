@@ -148,6 +148,16 @@ a separate config (`--config`) for a long-term split.
 - No projections: never say what a trade will make. A target is a plan, not a forecast.
 - Free Yahoo prices are unofficial and can lag. The broker's price is the one that fills.
 
+## Indian market (NSE)
+
+A plan for a symbol ending in `.NS` (`RELIANCE.NS`) is sized on India time.
+The NSE has its own three clock settings, built in: `no_entries_before` 09:30,
+`no_entries_after` 15:00 and `flat_by` 15:15. To change one, add an `"nse"`
+block to `trader/config.json`, for example `"nse": {"flat_by": "15:10"}`. The
+top-level ones are New York times and only apply to US symbols. The budget and
+the limits are plain numbers in the account's currency, whatever the `$` and
+the `_usd` key names say.
+
 ## What it never does
 
 It never places, approves or schedules an order, never raises a limit on its

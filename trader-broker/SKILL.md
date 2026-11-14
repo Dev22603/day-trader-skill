@@ -191,6 +191,14 @@ card reads "Claude wants to use Place stock order" with that JSON and two
 buttons: Allow once, Deny. Allow once sends it to the paper account. The
 `why` and the plan stay in the file; they are never sent.
 
+## Indian market (NSE)
+
+For orders whose symbols end in `.NS` (`RELIANCE.NS`) the tickets, the log and
+`flatten` use India time, and `flatten` closes by 15:15. Alpaca is a US broker
+and does not trade NSE stocks: `ticket.py` still builds and logs the ticket,
+but placing it needs an Indian broker's connector. Tell the user that plainly
+before asking for a yes.
+
 ## What it never does
 
 - Never places an order without all three gates, and never two orders on one yes.

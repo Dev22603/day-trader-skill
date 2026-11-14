@@ -61,6 +61,12 @@ Data: https://query2.finance.yahoo.com/v8/finance/chart/<T>?range=60d&interval=5
 (unofficial and free, can lag; falls back to query1 on 429 or 5xx).
 --offline FILE reads a saved chart JSON (.json or .json.gz) instead.
 Times are New York (ET) wall-clock; --now "2026-10-19 10:15" pins the clock.
+
+Indian market: a plan whose symbol ends in .NS (RELIANCE.NS) is replayed on
+India time, from the 9:15 open to 15:15, the flat-by time: 72 five-minute
+bars, no early closes, and --until defaults to 15:15. The NSE closes at 15:30,
+but every day trade is out by 15:15 and Yahoo's bars for those last 15 minutes
+are mostly empty. The symbol goes to Yahoo unchanged.
 """
 
 import argparse
@@ -103,9 +109,50 @@ NYSE_EARLY_CLOSE = {  # 1:00 p.m. ET, from https://www.nyse.com/markets/hours-ca
 }
 EARLY_MIN = 13 * 60
 
+# A symbol ending in .NS trades on the NSE: India time (UTC+5:30, no daylight time), no
+# early closes. Anything else is the NYSE. The NSE closes at 15:30, but the replay session
+# ends at 15:15 (72 five-minute bars from 9:15): every day trade is flat by 15:15, and
+# Yahoo's bars for the last 15 minutes are mostly empty (RELIANCE.NS and TCS.NS, 60 days
+# to 2026-11-13: the 15:20 bar is null every day, 15:25 on most), so a session that had
+# to run to 15:30 would never count as full.
+NSE_TICKER = re.compile(r"^[A-Z0-9][A-Z0-9&\-]{0,19}\.NS$")   # RELIANCE.NS, M&M.NS, BAJAJ-AUTO.NS
+# (bars in a session, open, end of the replay session, early closes, place, zone)
+MARKETS = {
+    False: (SESSION_BARS, OPEN_MIN, CLOSE_MIN, NYSE_EARLY_CLOSE, "New York", "ET"),
+    True: (72, 9 * 60 + 15, 15 * 60 + 15, {}, "India", "IST"),
+}
+NSE = False
+SESSION_BARS, OPEN_MIN, CLOSE_MIN, EARLY_CLOSE, PLACE, ZONE = MARKETS[NSE]
+
 
 class TMError(Exception):
     pass
+
+
+# ---------------------------------------------------------------- market
+
+def use_market(symbols):
+    """Every symbol ends in .NS: this run is on the NSE. None do: the NYSE, as before."""
+    # ponytail: one market per run, a module switch. Thread a market argument
+    # through the clock functions if one run ever has to mix exchanges.
+    global NSE, SESSION_BARS, OPEN_MIN, CLOSE_MIN, EARLY_CLOSE, PLACE, ZONE
+    ns = [str(s).upper().endswith(".NS") for s in symbols if s]
+    if any(ns) and not all(ns):
+        raise TMError("NSE (.NS) and US symbols in one run: they keep different hours, run them separately")
+    if any(ns) != NSE:
+        NSE = any(ns)
+        SESSION_BARS, OPEN_MIN, CLOSE_MIN, EARLY_CLOSE, PLACE, ZONE = MARKETS[NSE]
+    return NSE
+
+
+def a_place():
+    return ("an " if PLACE[:1] in "AEIOU" else "a ") + PLACE
+
+
+def yahoo_symbol(sym):
+    """BRK.B -> BRK-B (Yahoo's US form). An NSE symbol (RELIANCE.NS) stays as it is."""
+    sym = sym.upper()
+    return sym if sym.endswith(".NS") else sym.replace(".", "-")
 
 
 # ---------------------------------------------------------------- time (copied from trader-alerts)
@@ -119,7 +166,9 @@ def _nth_sunday(year, month, n):
 def eastern_offset(utc):
     """Hours from UTC for New York: -4 in daylight time, -5 otherwise.
     DST runs from 2:00 a.m. on the second Sunday of March to 2:00 a.m. on the
-    first Sunday of November (US rule since 2007)."""
+    first Sunday of November (US rule since 2007). On the NSE: +5.5, all year."""
+    if NSE:
+        return 5.5
     y = utc.year
     start = datetime.datetime.combine(_nth_sunday(y, 3, 2), datetime.time(7, 0))   # 2:00 EST
     end = datetime.datetime.combine(_nth_sunday(y, 11, 1), datetime.time(6, 0))    # 2:00 EDT
@@ -132,6 +181,8 @@ def to_eastern(utc):
 
 
 def eastern_to_utc(local):
+    if NSE:
+        return local - datetime.timedelta(hours=5.5)
     for off in (-4, -5):
         utc = local - datetime.timedelta(hours=off)
         if eastern_offset(utc) == off:
@@ -147,7 +198,7 @@ def parse_now(text):
     try:
         dt = datetime.datetime.fromisoformat(t)
     except ValueError:
-        raise TMError("--now wants a time like \"2026-10-19 10:15\" (New York) or ...Z (UTC)")
+        raise TMError("--now wants a time like \"2026-10-19 10:15\" (%s) or ...Z (UTC)" % PLACE)
     if dt.tzinfo is None:
         return eastern_to_utc(dt)
     return (dt - dt.utcoffset()).replace(tzinfo=None)
@@ -161,7 +212,7 @@ def parse_clock(text, what):
     """'10:15 AM', '10:15am', '15:55' or '3:55' (a bare 1 to 8 o'clock means p.m.) -> minutes after midnight."""
     m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*(?:([AaPp])\.?\s*[Mm]\.?)?\s*$", str(text or ""))
     if not m:
-        raise TMError("%s wants a New York time like 10:15 AM or 15:55, not %r" % (what, text))
+        raise TMError("%s wants %s time like 10:15 AM or 15:55, not %r" % (what, a_place(), text))
     h, mi, ap = int(m.group(1)), int(m.group(2)), (m.group(3) or "").lower()
     if mi > 59 or h > 23 or (ap and not 1 <= h <= 12):
         raise TMError("%s %r is not a clock time" % (what, text))
@@ -187,7 +238,7 @@ def clock24(minutes):
 
 def chart_url(sym, host="query2"):
     return "https://%s.finance.yahoo.com/v8/finance/chart/%s?range=60d&interval=5m" % (
-        host, urllib.parse.quote(sym.upper().replace(".", "-")))
+        host, urllib.parse.quote(yahoo_symbol(sym)))
 
 
 def _sleep(seconds):
@@ -531,8 +582,9 @@ def load_plan(a, now_utc):
 def normalize_plan(raw, src="flags"):
     """A plan dict (trader/plan.json shape) -> the checked plan the time machine runs."""
     sym = str(raw.get("symbol") or "").strip().upper()
-    if not re.match(r"^[A-Z][A-Z0-9.\-]{0,9}$", sym):
+    if not (re.match(r"^[A-Z][A-Z0-9.\-]{0,9}$", sym) or NSE_TICKER.match(sym)):
         raise TMError("the plan needs a ticker symbol, got %r" % raw.get("symbol"))
+    use_market([sym])
     side = str(raw.get("side") or "buy").lower()
     if side not in ("buy", "sell"):
         raise TMError("side must be buy or sell, got %r" % raw.get("side"))
@@ -569,15 +621,15 @@ def normalize_plan(raw, src="flags"):
     if k is None:
         raise TMError("the plan needs entry_time (the entry bar's close, e.g. 10:15 AM) or entry_bar")
     if not 0 <= k <= SESSION_BARS - 2:
-        raise TMError("the entry must close between 9:35 AM and 3:55 PM to leave bars to replay "
-                      "(got %s)" % clock12(OPEN_MIN + 5 * (k + 1)))
+        raise TMError("the entry must close between %s and %s to leave bars to replay "
+                      "(got %s)" % (clock12(OPEN_MIN + 5), clock12(CLOSE_MIN - 5), clock12(OPEN_MIN + 5 * (k + 1))))
     orng = raw.get("opening_range") or {}
     or_min = orng.get("minutes", 15) if isinstance(orng, dict) else 15
     try:
         or_min = int(or_min)
     except (TypeError, ValueError):
         raise TMError("opening_range.minutes must be a number")
-    if or_min < 5 or or_min % 5 or or_min >= 390:
+    if or_min < 5 or or_min % 5 or or_min >= SESSION_BARS * 5:
         raise TMError("opening_range.minutes must be a multiple of 5 (got %s)" % or_min)
     risk = (entry - stop) if long else (stop - entry)
     return {
@@ -624,7 +676,7 @@ def resolve_rule(plan, entry_day):
 # ---------------------------------------------------------------- the run
 
 def _until12(mc):
-    t = mc.get("until") or "16:00"
+    t = mc.get("until") or clock24(CLOSE_MIN)
     return clock12(int(t[:2]) * 60 + int(t[3:]))
 
 
@@ -686,7 +738,7 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     result = chart_result(text, sym)
     meta, bars, dropped = parse_bars(result, now_utc)
     msym = str(meta.get("symbol") or "").upper()
-    if msym and msym != sym.replace(".", "-"):
+    if msym and msym != yahoo_symbol(sym):
         raise TMError("the data is for %s but the plan is for %s" % (msym, sym))
     gran = meta.get("dataGranularity")
     if gran and gran != "5m":
@@ -694,7 +746,7 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     if not bars:
         raise TMError("no complete 5-minute bars for %s in the data" % sym)
     k = plan["entry_bar"]
-    early = plan["date"] in NYSE_EARLY_CLOSE
+    early = plan["date"] in EARLY_CLOSE
     end_min = EARLY_MIN if early else CLOSE_MIN
     until_min = end_min if until is None else parse_clock(until, "--until")
     if (until_min - OPEN_MIN) % 5 or until_min > end_min:
@@ -740,7 +792,7 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
         "created_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source": source,
         "data": {"symbol": msym or sym, "interval": "5m", "range": "60d",
-                 "last_bar": "%s %s ET" % (last_bar["date"], last_bar["start"]),
+                 "last_bar": "%s %s %s" % (last_bar["date"], last_bar["start"], ZONE),
                  "dropped": dropped, "short_sessions_left_out": short},
         "plan": plan_out,
         "mc": mc,
@@ -870,6 +922,9 @@ def _write(path, doc):
 def compute(a):
     now = parse_now(a.now)
     plan = load_plan(a, now)
+    if NSE:                                # the plan put this run on the NSE clock: read --now again
+        now = parse_now(a.now)
+        plan = load_plan(a, now)
     if a.offline:
         text, source = read_offline(a.offline, plan["symbol"]), "offline"
     else:

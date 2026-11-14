@@ -89,6 +89,12 @@ in and out before the close. No new 8-K." At 10:52 the price line reads
 `TSLA 366.48 +3.31% vs yesterday's close 354.72 at 10:52 ET  MOVING`. When a
 ticker has no news, say so rather than padding the brief.
 
+## Indian market (NSE)
+
+A ticker ending in `.NS` (`RELIANCE.NS`) goes to Yahoo unchanged. When every
+ticker ends in `.NS`, times print in India time (IST) and the SEC part is
+skipped: SEC EDGAR only covers US filers.
+
 ## What it never does
 
 - Never invents or embellishes a story, a quote or a number.

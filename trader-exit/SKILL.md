@@ -115,6 +115,14 @@ sizes it: a $50 max loss per trade buys floor(50 / 5.86) = 8 shares.
   prediction that the price gets there.
 - Long side only. v2 plans longs only.
 
+## Indian market (NSE)
+
+A plan for a symbol ending in `.NS` (`RELIANCE.NS`) is on India time (IST) and
+the NSE session, 9:15 to 15:30. Flat by is 15:15, win or lose. To change it,
+set `"flat_by"` inside the `"nse"` block of `trader/config.json` or pass
+`--flat-by`; a time at or after the 15:30 close is refused. The top-level
+`flat_by` (15:55) is a New York time and only applies to US symbols.
+
 ## What it never does
 
 It never places an order, never sizes a position, never widens a stop to

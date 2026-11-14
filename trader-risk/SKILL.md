@@ -154,6 +154,15 @@ it is after the 3:30 entry cutoff: it is an exit.
 - Free Yahoo prices are unofficial and can lag; the broker's price is the one that fills, and a
   stop can fill worse than its price in a fast market.
 
+## Indian market (NSE)
+
+When every order's symbol ends in `.NS` (`RELIANCE.NS`) the window check runs
+on India time: the NSE session is 9:15 to 15:30, weekends and the NSE's 2026
+holidays are closed, and new entries are allowed from 09:30 to 15:00 (the
+`"nse"` block in `trader/config.json` changes those two times). A file that
+mixes `.NS` and US symbols is refused: check them separately. The amounts are
+plain numbers in the account's currency, whatever the `$` and `_usd` say.
+
 ## What it never does
 
 It never places an order, never edits an order to make it pass, never

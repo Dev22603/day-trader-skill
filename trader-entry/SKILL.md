@@ -125,6 +125,15 @@ and the trigger moves to 10:35 AM at 365.75 (the 10:30 bar, 7.98x).
   reset it.
 - Never call an entry early because a bar looks like it will close above.
 
+## Indian market (NSE)
+
+A symbol ending in `.NS` (`RELIANCE.NS`) goes to Yahoo unchanged and runs on
+the NSE clock: India time (IST), 9:15 to 15:30, the NSE's 2026 holiday list,
+no early closes. The 15-minute opening range is the 9:15, 9:20 and 9:25 bars,
+and the entry window is 09:30 to 15:00 (the `"nse"` block in
+`trader/config.json` changes those two times). `--now` is India time for a
+`.NS` symbol. Every other symbol stays on the NYSE clock described above.
+
 ## What it never does
 
 It never places an order, never sizes a position, never sets the stop (that

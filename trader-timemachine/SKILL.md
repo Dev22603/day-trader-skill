@@ -149,6 +149,14 @@ the user should hear before `/trader-budget` sizes 8 shares.
 - Always say the seed, so any run can be repeated.
 - One plan per run. A changed entry, stop, target or date is a new run.
 
+## Indian market (NSE)
+
+A plan for a symbol ending in `.NS` (`RELIANCE.NS`) is replayed on India time,
+from the 9:15 open to 15:15, the flat-by time: 72 five-minute bars, no early
+closes. `--until` defaults to 15:15. The NSE closes at 15:30, but every day
+trade is out by 15:15 and Yahoo's bars for those last 15 minutes are mostly
+empty, so they are left out. "Neither" means still open at 15:15.
+
 ## What it never does
 
 It never places an order, never sizes a position, never changes the plan,

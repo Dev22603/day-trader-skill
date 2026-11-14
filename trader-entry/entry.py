@@ -33,6 +33,11 @@ no-data (the market is closed today or Yahoo sent no bars).
 trader/config.json (optional): "no_entries_before" (09:45) and
 "no_entries_after" (15:30), New York time.
 
+Indian market: a symbol ending in .NS (RELIANCE.NS) goes to Yahoo unchanged
+and runs on the NSE clock: India time, 9:15 to 15:30, the NSE holiday list,
+no entries before 09:30 or after 15:00 (the config's "nse" block changes
+those two). Every other symbol is on the NYSE clock described above.
+
 watch wakes just after each bar closes (bars only change then), re-polls every
 --every seconds (default 30) while Yahoo has not posted the new bar, prints one
 line per closed bar and stops on a trigger (exit 0, writes trader/entry.json),
@@ -59,6 +64,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
@@ -103,9 +109,69 @@ OPEN = datetime.time(9, 30)
 CLOSE = datetime.time(16, 0)
 EARLY = datetime.time(13, 0)
 
+# A symbol ending in .NS trades on the NSE: India time (UTC+5:30, no daylight time),
+# 9:15 to 15:30, the NSE holiday list, no early closes. Anything else is the NYSE.
+NSE_HOLIDAYS = {  # capital-market trading holidays 2026: NSE circulars NSE/CMTR/71775 and
+    # NSE/CMTR/72260, as listed on zerodha.com and upstox.com (read 2026-11-15)
+    "2026-01-15": "Municipal Corporation Election in Maharashtra",
+    "2026-01-26": "Republic Day",
+    "2026-03-03": "Holi",
+    "2026-03-26": "Shri Ram Navami",
+    "2026-03-31": "Shri Mahavir Jayanti",
+    "2026-04-03": "Good Friday",
+    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+    "2026-05-01": "Maharashtra Day",
+    "2026-05-28": "Bakri Id",
+    "2026-06-26": "Muharram",
+    "2026-09-14": "Ganesh Chaturthi",
+    "2026-10-02": "Mahatma Gandhi Jayanti",
+    "2026-10-20": "Dussehra",
+    "2026-11-10": "Diwali-Balipratipada",
+    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
+    "2026-12-25": "Christmas",
+}
+NSE_TIMES = {"no_entries_before": "09:30", "no_entries_after": "15:00", "flat_by": "15:15"}
+# (open, close, holidays, early closes, years the list covers, exchange, place, zone, site)
+MARKETS = {
+    False: (OPEN, CLOSE, NYSE_HOLIDAYS, NYSE_EARLY_CLOSE, CALENDAR_YEARS, "NYSE", "New York", "ET", "nyse.com"),
+    True: (datetime.time(9, 15), datetime.time(15, 30), NSE_HOLIDAYS, {}, (2026,), "NSE", "India", "IST",
+           "nseindia.com"),
+}
+NSE = False
+OPEN, CLOSE, HOLIDAYS, EARLY_CLOSE, CALENDAR_YEARS, EXCHANGE, PLACE, ZONE, SITE = MARKETS[NSE]
+
 
 class EntryError(Exception):
     pass
+
+
+# ---------------------------------------------------------------- market
+
+def use_market(symbols):
+    """Every symbol ends in .NS: this run is on the NSE. None do: the NYSE, as before."""
+    # ponytail: one market per run, a module switch. Thread a market argument
+    # through the clock functions if one run ever has to mix exchanges.
+    global NSE, OPEN, CLOSE, HOLIDAYS, EARLY_CLOSE, CALENDAR_YEARS, EXCHANGE, PLACE, ZONE, SITE
+    ns = [str(s).upper().endswith(".NS") for s in symbols if s]
+    if any(ns) and not all(ns):
+        raise EntryError("NSE (.NS) and US symbols in one run: they keep different hours, run them separately")
+    if any(ns) != NSE:
+        NSE = any(ns)
+        OPEN, CLOSE, HOLIDAYS, EARLY_CLOSE, CALENDAR_YEARS, EXCHANGE, PLACE, ZONE, SITE = MARKETS[NSE]
+    return NSE
+
+
+def market_cfg(doc):
+    """The config as this run's market reads it: on the NSE the three clock settings come
+    from its "nse" block (defaults NSE_TIMES), never from the top-level New York times."""
+    if not NSE:
+        return doc
+    block = doc.get("nse") if isinstance(doc.get("nse"), dict) else {}
+    return dict(doc, **{k: block.get(k) or v for k, v in NSE_TIMES.items()})
+
+
+def a_place():
+    return ("an " if PLACE[:1] in "AEIOU" else "a ") + PLACE
 
 
 # ---------------------------------------------------------------- time
@@ -119,7 +185,9 @@ def _nth_sunday(year, month, n):
 def eastern_offset(utc):
     """Hours from UTC for New York: -4 in daylight time, -5 otherwise.
     DST runs from 2:00 a.m. on the second Sunday of March to 2:00 a.m. on the
-    first Sunday of November (US rule since 2007)."""
+    first Sunday of November (US rule since 2007). On the NSE: +5.5, all year."""
+    if NSE:
+        return 5.5
     y = utc.year
     start = datetime.datetime.combine(_nth_sunday(y, 3, 2), datetime.time(7, 0))   # 2:00 EST
     end = datetime.datetime.combine(_nth_sunday(y, 11, 1), datetime.time(6, 0))    # 2:00 EDT
@@ -132,6 +200,8 @@ def to_eastern(utc):
 
 
 def eastern_to_utc(local):
+    if NSE:
+        return local - datetime.timedelta(hours=5.5)
     for off in (-4, -5):
         utc = local - datetime.timedelta(hours=off)
         if eastern_offset(utc) == off:
@@ -162,15 +232,15 @@ def parse_now(text):
     if not text:
         return utc_now()
     t = text.strip()
-    if t.upper().endswith(" ET"):
-        t = t[:-3].strip()
+    if t.upper().endswith(" " + ZONE):
+        t = t[:-len(ZONE) - 1].strip()
     if re.match(r"^\d{1,2}:\d{2}$", t):
         t = "%s %s" % (to_eastern(utc_now()).date().isoformat(), t.zfill(5))
     t = t.replace("Z", "+00:00")
     try:
         dt = datetime.datetime.fromisoformat(t)
     except ValueError:
-        raise EntryError('--now wants a New York time like "2026-10-19 10:15" (or ...Z for UTC)')
+        raise EntryError('--now wants %s time like "2026-10-19 10:15" (or ...Z for UTC)' % a_place())
     if dt.tzinfo is None:
         return eastern_to_utc(dt)
     return (dt - dt.utcoffset()).replace(tzinfo=None)
@@ -179,7 +249,7 @@ def parse_now(text):
 def parse_hhmm(text, what):
     m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", str(text))
     if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
-        raise EntryError("%s wants a New York time like 15:30, not %r" % (what, text))
+        raise EntryError("%s wants %s time like 15:30, not %r" % (what, a_place(), text))
     return datetime.time(int(m.group(1)), int(m.group(2)))
 
 
@@ -199,28 +269,28 @@ def ampm(t):
 
 
 def trading_day(d):
-    """(is_trading_day, reason). Weekends and the NYSE holiday list."""
+    """(is_trading_day, reason). Weekends and the market's holiday list."""
     if d.weekday() >= 5:
         return False, "weekend"
-    name = NYSE_HOLIDAYS.get(d.isoformat())
+    name = HOLIDAYS.get(d.isoformat())
     if name:
-        return False, "NYSE holiday: " + name
+        return False, "%s holiday: %s" % (EXCHANGE, name)
     return True, ""
 
 
 def session(d):
-    """(open_time, close_time) in New York time, or None if closed all day."""
+    """(open_time, close_time) in the market's time, or None if closed all day."""
     ok, _ = trading_day(d)
     if not ok:
         return None
-    return OPEN, (EARLY if d.isoformat() in NYSE_EARLY_CLOSE else CLOSE)
+    return OPEN, (EARLY if d.isoformat() in EARLY_CLOSE else CLOSE)
 
 
 def next_open(d):
     nd = d + datetime.timedelta(days=1)
     for _ in range(15):
         if session(nd):
-            return "%s 09:30" % nd.isoformat()
+            return "%s %s" % (nd.isoformat(), hm(OPEN))
         nd += datetime.timedelta(days=1)
     return None
 
@@ -228,11 +298,13 @@ def next_open(d):
 # ---------------------------------------------------------------- Yahoo
 
 def yahoo_symbol(sym):
-    return sym.upper().replace(".", "-")
+    """BRK.B -> BRK-B (Yahoo's US form). An NSE symbol (RELIANCE.NS) stays as it is."""
+    sym = sym.upper()
+    return sym if sym.endswith(".NS") else sym.replace(".", "-")
 
 
 def chart_path(sym, rng, interval):
-    return "/v8/finance/chart/%s?range=%s&interval=%s" % (yahoo_symbol(sym), rng, interval)
+    return "/v8/finance/chart/%s?range=%s&interval=%s" % (urllib.parse.quote(yahoo_symbol(sym)), rng, interval)
 
 
 def chart_range(day, today, interval):
@@ -376,15 +448,17 @@ def get_chart(sym, interval, day=None, offline=None, today=None):
 
 def read_config(path):
     cfg = dict(DEFAULTS)
+    doc = {}
     if path and os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as fh:
                 doc = json.load(fh)
         except ValueError as e:
             raise EntryError("%s is not valid JSON: %s" % (path, e))
-        for k in DEFAULTS:
-            if doc.get(k):
-                cfg[k] = doc[k]
+    doc = market_cfg(doc)
+    for k in DEFAULTS:
+        if doc.get(k):
+            cfg[k] = doc[k]
     for k in DEFAULTS:
         parse_hhmm(cfg[k], k)
     return cfg
@@ -408,7 +482,7 @@ def early_cutoff(day, t, close_dt):
 def evaluate(chart, now_utc, setup="orb", or_minutes=15, interval="5m", level=None,
              min_volume_x=None, cfg=None):
     """Pure function: the setup's status at now_utc from one session's bars."""
-    cfg = cfg or dict(DEFAULTS)
+    cfg = cfg or read_config(None)
     if interval not in INTERVALS:
         raise EntryError("--interval is 5m or 1m")
     step = INTERVALS[interval]
@@ -430,7 +504,7 @@ def evaluate(chart, now_utc, setup="orb", or_minutes=15, interval="5m", level=No
     res["data_time"] = to_eastern(utc_of(dt)).strftime("%Y-%m-%d %H:%M:%S") if dt else None
     ok, why = trading_day(day)
     if not ok:
-        res.update(status="no-data", phase="closed", reason="the NYSE is closed today (%s)" % why,
+        res.update(status="no-data", phase="closed", reason="the %s is closed today (%s)" % (EXCHANGE, why),
                    next_open=next_open(day))
         return res
     o, c = session(day)
@@ -440,7 +514,7 @@ def evaluate(chart, now_utc, setup="orb", or_minutes=15, interval="5m", level=No
     before = datetime.datetime.combine(day, parse_hhmm(cfg["no_entries_before"], "no_entries_before"))
     cutoff = early_cutoff(day, parse_hhmm(cfg["no_entries_after"], "no_entries_after"), close_dt)
     or_end = open_dt + datetime.timedelta(minutes=or_minutes)
-    res.update(opens=hm(o), closes=hm(c), early_close=NYSE_EARLY_CLOSE.get(day.isoformat()),
+    res.update(opens=hm(o), closes=hm(c), early_close=EARLY_CLOSE.get(day.isoformat()),
                no_entries_before=hm(before), no_entries_after=hm(cutoff))
 
     by_slot = {}
@@ -475,7 +549,8 @@ def evaluate(chart, now_utc, setup="orb", or_minutes=15, interval="5m", level=No
     res["bars_closed"] = len(bars)
 
     if local < open_dt:
-        res.update(phase="pre-open", reason="the NYSE opens at 9:30%s" % (
+        res.update(phase="pre-open", reason="the %s opens at %s%s" % (
+            EXCHANGE, short(o),
             " and the %d-minute range is set at %s" % (or_minutes, short(or_end)) if setup == "orb" else ""))
         return res
 
@@ -595,8 +670,8 @@ def describe(res):
     """Plain lines for a person."""
     when = datetime.datetime.strptime(res["now"], "%Y-%m-%d %H:%M:%S")
     bars = "5-minute" if res["interval"] == "5m" else "1-minute"
-    head = "%s  %s %s ET  %s on %s bars (Yahoo, free, can lag)" % (
-        res["symbol"], when.strftime("%a %Y-%m-%d"), when.strftime("%H:%M"), setup_name(res), bars)
+    head = "%s  %s %s %s  %s on %s bars (Yahoo, free, can lag)" % (
+        res["symbol"], when.strftime("%a %Y-%m-%d"), when.strftime("%H:%M"), ZONE, setup_name(res), bars)
     if res.get("data_time") and res["data_time"] <= res["now"] and res["data_time"][:10] == res["date"]:
         head += ", data to %s" % res["data_time"][11:]
     out = [head]
@@ -638,12 +713,13 @@ def describe(res):
         if res["status"] == "expired":
             out.append("No entry on this setup today. Nothing was placed.")
         if res.get("next_open"):
-            out.append("Next open: %s New York." % res["next_open"])
+            out.append("Next open: %s %s." % (res["next_open"], PLACE))
     if res.get("early_close"):
         out.append("Early close today at 1:00 p.m. (%s): no new entries after %s." % (
             res["early_close"], res["no_entries_after"]))
     if not res.get("calendar_known"):
-        out.append("Holiday list covers %s only: check nyse.com for this date." % " and ".join(map(str, CALENDAR_YEARS)))
+        out.append("Holiday list covers %s only: check %s for this date." % (
+            " and ".join(map(str, CALENDAR_YEARS)), SITE))
     return out
 
 
@@ -715,8 +791,8 @@ def watch_loop(provider, clock, sleep, emit, opts, every=30, until=None, max_err
         close_dt = datetime.datetime.combine(day, s[1])
         if local < open_dt + datetime.timedelta(seconds=step):
             if not said_preopen:
-                emit("%s ET  %s: watching from the first bar's close at %s." % (
-                    local.strftime("%H:%M"), "not open yet" if local < open_dt else "open, no bar closed yet",
+                emit("%s %s  %s: watching from the first bar's close at %s." % (
+                    local.strftime("%H:%M"), ZONE, "not open yet" if local < open_dt else "open, no bar closed yet",
                     short(open_dt + datetime.timedelta(seconds=step))))
                 said_preopen = True
             next_fetch = eastern_to_utc(open_dt) + datetime.timedelta(seconds=step + GRACE)
@@ -726,7 +802,7 @@ def watch_loop(provider, clock, sleep, emit, opts, every=30, until=None, max_err
             errors = 0
         except EntryError as e:
             errors += 1
-            emit("%s ET  could not read bars: %s" % (local.strftime("%H:%M:%S"), e))
+            emit("%s %s  could not read bars: %s" % (local.strftime("%H:%M:%S"), ZONE, e))
             if errors >= max_errors:
                 emit("Stopping after %d failed reads in a row." % errors)
                 return 1, None
@@ -805,6 +881,7 @@ def _load(a, sym, now):
 
 
 def cmd_check(a):
+    use_market([a.symbol])
     cfg = read_config(a.config)
     opts = _opts(a, cfg)
     sym = a.symbol.upper()
@@ -823,6 +900,7 @@ def cmd_check(a):
 
 
 def cmd_watch(a):
+    use_market([a.symbol])
     cfg = read_config(a.config)
     opts = _opts(a, cfg)
     sym = a.symbol.upper()
@@ -871,6 +949,8 @@ def cmd_watchlist(a):
     hits = [h for h in (doc.get("hits") or []) if isinstance(h, dict) and h.get("symbol")]
     if not hits:
         raise EntryError("no hits in %s: the scanner found nothing to watch" % a.watchlist)
+    if use_market([h["symbol"] for h in hits]):
+        opts["cfg"] = read_config(a.config)   # the NSE's entry window, now that the market is known
     if a.offline and not os.path.isdir(a.offline):
         raise EntryError("watchlist --offline wants a folder of <TICKER>.json files")
     now = parse_now(a.now) if a.now else None

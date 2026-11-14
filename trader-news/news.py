@@ -34,6 +34,10 @@ what you have seen (30 days), so an item shows once. Offline: --offline DIR
 reads yahoo-<TICKER>.xml, chart-<TICKER>.json, sec-<FORM>-<CIK>.xml and
 company_tickers.json from DIR. The tests use it.
 
+Indian market: a ticker ending in .NS (RELIANCE.NS) goes to Yahoo unchanged.
+When every ticker ends in .NS the times print in India time (IST) and the SEC
+part is skipped (SEC EDGAR only covers US filers).
+
 Headlines are leads, not facts: open the story before acting, and treat
 nothing here as advice.
 """
@@ -49,6 +53,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -88,8 +93,21 @@ KEYWORDS = [
 ]
 
 
+NSE = False     # every ticker ends in .NS: times print in India time (UTC+5:30, no daylight time)
+ZONE = "ET"
+
+
 class NewsError(Exception):
     pass
+
+
+def use_market(tickers):
+    """Every ticker ends in .NS: India time (IST), and no SEC lookup. A mixed list stays
+    on New York time: here the market only changes how times are printed."""
+    global NSE, ZONE
+    NSE = bool(tickers) and all(str(t).upper().endswith(".NS") for t in tickers)
+    ZONE = "IST" if NSE else "ET"
+    return NSE
 
 
 # ---------------------------------------------------------------- time
@@ -101,7 +119,10 @@ def _nth_sunday(year, month, n):
 
 
 def eastern_offset(utc):
-    """Hours from UTC for New York: -4 in daylight time, -5 otherwise (US rule since 2007)."""
+    """Hours from UTC for New York: -4 in daylight time, -5 otherwise (US rule since 2007).
+    On the NSE: +5.5, all year."""
+    if NSE:
+        return 5.5
     y = utc.year
     start = _dt.datetime.combine(_nth_sunday(y, 3, 2), _dt.time(7, 0))   # 2:00 EST
     end = _dt.datetime.combine(_nth_sunday(y, 11, 1), _dt.time(6, 0))    # 2:00 EDT
@@ -192,7 +213,9 @@ class Fetcher(object):
 
 
 def yahoo_symbol(ticker):
-    return ticker.upper().replace(".", "-")
+    """BRK.B -> BRK-B (Yahoo's US form). An NSE symbol (RELIANCE.NS) stays as it is."""
+    ticker = ticker.upper()
+    return ticker if ticker.endswith(".NS") else ticker.replace(".", "-")
 
 
 def cik_map(fetcher, state):
@@ -312,11 +335,11 @@ def collect_moves(fetcher, watch, errors=None):
         name = "chart-%s.json" % t
         try:
             try:
-                data = fetcher.get(CHART % ("query2", yahoo_symbol(t)), name)
+                data = fetcher.get(CHART % ("query2", urllib.parse.quote(yahoo_symbol(t))), name)
             except NewsError as exc:
                 if fetcher.offline or not re.search(r"HTTP (429|5\d\d)", str(exc)):
                     raise
-                data = fetcher.get(CHART % ("query1", yahoo_symbol(t)), name)
+                data = fetcher.get(CHART % ("query1", urllib.parse.quote(yahoo_symbol(t))), name)
             out.append(parse_chart(data, t))
         except NewsError as exc:
             if not (fetcher.offline and "no file" in str(exc)):
@@ -383,7 +406,7 @@ def collect(fetcher, watch, state, sec=True, forms=("8-K",), count=10, errors=No
     items = []
     for t in sorted(watch):
         try:
-            items += parse_rss(fetcher.get(YAHOO % yahoo_symbol(t), "yahoo-%s.xml" % t), t)
+            items += parse_rss(fetcher.get(YAHOO % urllib.parse.quote(yahoo_symbol(t)), "yahoo-%s.xml" % t), t)
         except NewsError as exc:
             errors.append("headlines for %s: %s" % (t, exc))
     if sec:
@@ -439,7 +462,7 @@ def render_moves(moves, move_pct=MOVE_PCT):
     out = []
     for m in moves:
         flag = "MOVING" if abs(m["pct"]) >= move_pct else ""
-        when = (" at %s ET" % to_eastern(m["time"]).strftime("%H:%M")) if m.get("time") else ""
+        when = (" at %s %s" % (to_eastern(m["time"]).strftime("%H:%M"), ZONE)) if m.get("time") else ""
         out.append("%-6s %s %+.2f%% vs yesterday's close %s%s  %s" % (
             m["ticker"], "{:,.2f}".format(m["price"]), m["pct"], "{:,.2f}".format(m["prev_close"]),
             when, flag))
@@ -453,7 +476,7 @@ def render(items, errors, now, moves=None, move_pct=MOVE_PCT):
     if not items:
         out.append("Nothing new.")
     for it in items:
-        when = to_eastern(it["time"]).strftime("%Y-%m-%d %H:%M ET") if it["time"] else "time unknown"
+        when = (to_eastern(it["time"]).strftime("%Y-%m-%d %H:%M ") + ZONE) if it["time"] else "time unknown"
         mark = "!" if it.get("important") else " "
         who = ",".join(it["touches"]) or it["ticker"]
         out.append("%s %s  %-11s %-13s %s" % (mark, when, who, it["source"], it["title"]))
@@ -465,7 +488,7 @@ def render(items, errors, now, moves=None, move_pct=MOVE_PCT):
     for e in errors:
         out.append("note: %s" % e)
     out.append("Checked %s. Headlines are leads, not facts; open the story before acting. "
-               "Not financial advice." % to_eastern(now).strftime("%Y-%m-%d %H:%M ET"))
+               "Not financial advice." % (to_eastern(now).strftime("%Y-%m-%d %H:%M ") + ZONE))
     return "\n".join(out) + "\n"
 
 
@@ -513,7 +536,7 @@ def main(argv=None):
     state = load_json(args.state) or {}
     errors = []
     ua = sec_user_agent(args.user_agent, args.config)
-    sec = not args.no_sec
+    sec = not use_market(watch) and not args.no_sec   # SEC EDGAR has no NSE filers
     if sec and not ua and not args.offline:
         errors.append("SEC filings skipped: set sec_user_agent in trader/config.json or "
                       "SEC_USER_AGENT (\"Your Name you@example.com\") to include them")

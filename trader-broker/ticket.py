@@ -31,6 +31,11 @@ work around the one moment that matters, your yes:
 
 Everything is written to trader/state/broker.json (append only). Dates are
 New York dates; --now "2026-10-19 10:15" pins the clock.
+
+Indian market: when the orders' symbols end in .NS (RELIANCE.NS) the dates and
+the clock are India time (+05:30) and flatten closes by 15:15 (the config's
+"nse" block changes it). The connector below is still Alpaca, a US broker:
+placing an NSE order needs an Indian broker's connector.
 """
 
 import argparse
@@ -53,10 +58,40 @@ YES_WORDS = ("yes", "y")
 BATCH_WORDS = {"all", "every", "everything", "rest", "remaining", "them", "both", "batch", "each"}
 DOUBT_WORDS = {"no", "not", "dont", "don't", "wait", "cancel", "stop", "but", "maybe", "later",
                "hold", "unless", "if"}
+# A symbol ending in .NS trades on the NSE: India time (UTC+5:30, no daylight time), with
+# its own clock settings. Anything else is on New York time, as before.
+NSE_TIMES = {"no_entries_before": "09:30", "no_entries_after": "15:00", "flat_by": "15:15"}
+NSE = False
+PLACE = "New York"
 
 
 class TicketError(Exception):
     pass
+
+
+# ---------------------------------------------------------------- market
+
+def use_market(symbols):
+    """Every symbol ends in .NS: this run is on the NSE. None do: New York time, as before."""
+    # ponytail: one market per run, a module switch. Thread a market argument
+    # through the clock functions if one run ever has to mix exchanges.
+    global NSE, PLACE
+    ns = [str(s).upper().endswith(".NS") for s in symbols if s]
+    if any(ns) and not all(ns):
+        raise TicketError("NSE (.NS) and US symbols in one orders file: they keep different hours, "
+                          "handle them separately")
+    NSE = any(ns)
+    PLACE = "India" if NSE else "New York"
+    return NSE
+
+
+def market_cfg(doc):
+    """The config as this run's market reads it: on the NSE the three clock settings come
+    from its "nse" block (defaults NSE_TIMES), never from the top-level New York times."""
+    if not NSE:
+        return doc
+    block = doc.get("nse") if isinstance(doc.get("nse"), dict) else {}
+    return dict(doc, **{k: block.get(k) or v for k, v in NSE_TIMES.items()})
 
 
 # ---------------------------------------------------------------- time (New York, no tz files)
@@ -70,7 +105,9 @@ def _nth_sunday(year, month, n):
 def eastern_offset(utc):
     """Hours from UTC for New York: -4 in daylight time, -5 otherwise.
     DST runs from 2:00 a.m. on the second Sunday of March to 2:00 a.m. on the
-    first Sunday of November (US rule since 2007)."""
+    first Sunday of November (US rule since 2007). On the NSE: +5.5, all year."""
+    if NSE:
+        return 5.5
     y = utc.year
     start = datetime.datetime.combine(_nth_sunday(y, 3, 2), datetime.time(7, 0))   # 2:00 EST
     end = datetime.datetime.combine(_nth_sunday(y, 11, 1), datetime.time(6, 0))    # 2:00 EDT
@@ -83,6 +120,8 @@ def to_eastern(utc):
 
 
 def eastern_to_utc(local):
+    if NSE:
+        return local - datetime.timedelta(hours=5.5)
     for off in (-4, -5):
         utc = local - datetime.timedelta(hours=off)
         if eastern_offset(utc) == off:
@@ -98,7 +137,7 @@ def parse_now(text):
     try:
         dt = datetime.datetime.fromisoformat(t)
     except ValueError:
-        raise TicketError("--now wants a time like \"2026-10-19 10:15\" (New York) or ...Z (UTC)")
+        raise TicketError("--now wants a time like \"2026-10-19 10:15\" (%s) or ...Z (UTC)" % PLACE)
     if dt.tzinfo is None:
         return eastern_to_utc(dt)
     return (dt - dt.utcoffset()).replace(tzinfo=None)
@@ -107,6 +146,8 @@ def parse_now(text):
 def ny_iso(now_utc):
     """naive UTC -> "2026-10-19T10:15:00-04:00" (New York wall clock with its offset)."""
     off = eastern_offset(now_utc)
+    if NSE:                                # India is a half-hour zone: ...T10:15:00+05:30
+        return "%s+05:30" % to_eastern(now_utc).replace(microsecond=0).isoformat()
     return "%s%+03d:00" % (to_eastern(now_utc).replace(microsecond=0).isoformat(), off)
 
 
@@ -467,6 +508,7 @@ def _load(a):
     cfg = read_json(a.config, "config", required=False) or {}
     risk = read_json(a.risk, "risk check", required=False)
     state = load_state(a.state)
+    use_market([o.get("symbol") for o in orders if isinstance(o, dict)])
     now, today = _clock(a)
     return orders, cfg, risk, state, today, now
 
@@ -571,6 +613,7 @@ def cmd_result(a):
 
 def cmd_fill(a):
     cfg = read_json(a.config, "config", required=False) or {}
+    use_market([a.symbol])
     now = parse_now(a.now)
     date = a.date or to_eastern(now).date().isoformat()
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
@@ -586,6 +629,7 @@ def cmd_fill(a):
 def cmd_flatten(a):
     cfg = read_json(a.config, "config", required=False) or {}
     sym = a.symbol.strip().upper()
+    use_market([sym])
     now, today = _clock(a)
     source = "the broker, get_open_position"
     if a.qty is not None:
@@ -602,10 +646,10 @@ def cmd_flatten(a):
                               "%s) and pass --qty if you do hold some" % (sym, a.portfolio, sym))
     plan = read_json(a.plan, "plan", required=False) or {}
     flat_by = (plan.get("flat_by") if str(plan.get("symbol", "")).upper() == sym else None) \
-        or cfg.get("flat_by") or "15:55"
+        or market_cfg(cfg).get("flat_by") or "15:55"
     order = {"symbol": sym, "side": "sell", "qty": _str_num(qty), "type": "market", "time_in_force": "day",
-             "why": "flat by %s New York: closes the %s day trade before the close (qty from %s)"
-             % (flat_by, sym, source)}
+             "why": "flat by %s %s: closes the %s day trade before the close (qty from %s)"
+             % (flat_by, PLACE, sym, source)}
     old = read_json(a.orders, "orders", required=False)
     replaced = len(old.get("orders", [])) if isinstance(old, dict) else 0
     doc = {"created_by": "trader-broker", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "status": "proposed",
@@ -613,7 +657,7 @@ def cmd_flatten(a):
            "note": "Flatten ticket. Nothing is placed until trader-risk passes it and you say yes in the chat.",
            "source": "ticket.py flatten %s on %s" % (sym, today), "orders": [order]}
     write_json(a.orders, doc)
-    print("Flatten %s: %s (flat by %s New York)." % (sym, plain(order), flat_by))
+    print("Flatten %s: %s (flat by %s %s)." % (sym, plain(order), flat_by, PLACE))
     print("Wrote it to %s%s." % (a.orders, (" (it replaced %d earlier proposal%s)"
                                              % (replaced, "" if replaced == 1 else "s")) if replaced else ""))
     if a.qty is None:
@@ -630,6 +674,7 @@ def cmd_flatten(a):
 
 def cmd_log(a):
     state = load_state(a.state)
+    use_market([r.get("symbol") for r in state.get("orders", [])[-1:]])   # "today" follows the latest record's market
     now, today = _clock(a)
     rows = [r for r in state.get("orders", []) if a.all or rec_day(r) == today]
     if not rows:

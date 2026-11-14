@@ -143,6 +143,16 @@ watched; with `add --opening-bell`, the bell rings at 9:30.
 - Never present a quote as live. Free quotes are delayed and unofficial.
 - Confirm every new rule back to the user: ticker, type, level, day.
 
+## Indian market (NSE)
+
+Rules for symbols ending in `.NS` (`RELIANCE.NS`) run on the NSE clock: India
+time, 9:15 to 15:30, the NSE's 2026 holiday list, no early closes.
+`alerts.py clock RELIANCE.NS` answers "is the NSE open?", and
+`add --opening-bell --symbol RELIANCE.NS` rings at 9:15. `add --from-plan`
+sets the flat-by alert at 15:15 India time. Quotes for `.NS` symbols come from
+Yahoo (the default source; Stooq only knows US symbols). Keep `.NS` rules and
+US rules in separate files (`--rules`): one check runs on one clock.
+
 ## What it never does
 
 It never places, cancels or changes an order, never claims a quote is
