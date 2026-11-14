@@ -10,10 +10,13 @@ description: >-
   and logs each trade's max loss so trader-risk can hold the daily limit.
   Covers setting up Alpaca's official MCP server in Claude Desktop (paper by
   default, keys in env vars, never in chat), the Interactive Brokers
-  connector, and setting order tools to "Needs approval". Use when the user
-  says "place the order", "buy it", "execute", "send it to my broker",
-  "close my position", "flatten", "get me out", "connect Alpaca", "set up
-  paper trading", or after /trader-risk passes.
+  connector, and setting order tools to "Needs approval". Indian stocks
+  (symbols ending in .NS) are ticketed for Zerodha Kite instead: an intraday
+  entry, then a stop-loss order, practice only while "paper" is true. Use
+  when the user says "place the order", "buy it", "execute", "send it to my
+  broker", "close my position", "flatten", "get me out", "connect Alpaca",
+  "connect Zerodha", "Kite", "set up paper trading", or after /trader-risk
+  passes.
 argument-hint: "[order number]"
 ---
 
@@ -191,13 +194,78 @@ card reads "Claude wants to use Place stock order" with that JSON and two
 buttons: Allow once, Deny. Allow once sends it to the paper account. The
 `why` and the plan stay in the file; they are never sent.
 
-## Indian market (NSE)
+## Indian market (NSE): Zerodha Kite
 
-For orders whose symbols end in `.NS` (`RELIANCE.NS`) the tickets, the log and
-`flatten` use India time, and `flatten` closes by 15:15. Alpaca is a US broker
-and does not trade NSE stocks: `ticket.py` still builds and logs the ticket,
-but placing it needs an Indian broker's connector. Tell the user that plainly
-before asking for a yes.
+An order whose symbol ends in `.NS` (`RELIANCE.NS`) is ticketed for Zerodha,
+not Alpaca. The three gates are the same. The tickets, the log and `flatten`
+use India time, and `flatten` closes by 15:15. Checked against Zerodha's
+kite-mcp-server source and support pages on 2026-11-15.
+
+**Practice first.** Zerodha has no paper account. While `"paper": true` (the
+default) a `.NS` ticket says PRACTICE: nothing is placed, by Claude or by the
+user in Kite. After the yes, record a pretend fill at the latest price
+(`ticket.py result --index N --status placed --broker-id practice
+--filled-qty Q --filled-price P`) and pretend exits with `ticket.py fill`.
+Never call `place_order` for a practice ticket and never tell the user to
+place one. Only the user switches `"paper"` to false.
+
+**The connector.**
+
+- Hosted, reads only: add `https://mcp.kite.trade/mcp` as a custom connector
+  (Customize > Connectors; in Claude Code
+  `claude mcp add --transport http kite https://mcp.kite.trade/mcp`). The user
+  logs in through the link its `login` tool gives, in the browser, never in
+  the chat. It reads the account (`get_positions`, `get_orders`,
+  `get_margins`, `get_ltp`, `get_quotes`, `search_instruments`) and leaves
+  out order placement.
+- Self-hosted, can place: github.com/zerodha/kite-mcp-server on the user's
+  computer, with their own Kite Connect API key and secret in its environment
+  variables (`KITE_API_KEY`, `KITE_API_SECRET`), never in the chat. Since
+  April 2026 Zerodha's API needs a registered static IP and refuses market
+  and SL-M orders without market protection, which `place_order` cannot send:
+  through it use a limit entry (`size.py --limit`) and the ticket's SL
+  stop-loss.
+- Permissions: read-only tools may be Always allow. `place_order`,
+  `modify_order`, `cancel_order` and the GTT tools: Needs approval, never
+  Always allow.
+
+**What a live ticket holds** (`"paper": false`). Zerodha has no bracket order,
+so one ticket is two orders, both intraday (MIS):
+
+1. the entry (market or limit);
+2. once it has filled, a stop-loss order (SL): trigger at the plan's stop,
+   limit 0.5% under it (`"nse": {"stop_limit_buffer_pct": 1}` changes that),
+   on the stock's tick.
+
+No order waits at the target: trader-alerts rings there. The ticket shows two
+ways to place it: what the user enters in the Kite app (way 1), and the exact
+`place_order` arguments for a self-hosted connector (way 2). One yes covers
+the ticket, the entry and its stop-loss. With way 2 each `place_order` call
+still gets its own Allow once card. A ticket that is NOT READY or BLOCKED
+shows neither way.
+
+**Steps, live.**
+
+1. `ticket.py show`, ONE READY ticket, the user's yes, `ticket.py approve`.
+2. Way 1: the user places the entry in Kite. Way 2: `place_order` with exactly
+   the first JSON.
+3. Confirm the fill with `get_orders` or `get_positions`. Then the stop-loss,
+   the same way. Never leave a filled entry without its stop-loss.
+4. `ticket.py result --index N --status placed --broker-id <order id>
+   --filled-qty Q --filled-price P`.
+5. Out at the target, at the stop alert or by 15:15: `get_positions` for the
+   quantity, `ticket.py flatten --symbol RELIANCE.NS --qty Q` (add
+   `--limit PRICE` for way 2), `/trader-risk`, the user's yes. **Cancel the
+   waiting stop-loss order first** (in Kite, or `get_orders` then
+   `cancel_order`): left open, it would sell again after the position is flat
+   and open a short. If the stop-loss itself filled, record it with
+   `ticket.py fill`: there is nothing left to flatten.
+
+Zerodha squares off intraday positions itself at 15:20 and charges for it: be
+flat by 15:15. A stop-loss with a limit can be skipped in a fast fall: if the
+stop alert rings and the shares are still there, flatten. If Zerodha refuses
+an order for its tick size, read the stock's `tick_size` with
+`search_instruments` and make the plan again with `exit.py plan --tick X`.
 
 ## What it never does
 

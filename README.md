@@ -142,10 +142,19 @@ python3 trader-exit/exit.py plan --stop or-mid --target 1R --write     # flat by
 ```
 
 `scan.py universe` only downloads the US lists: pass your own `.NS` symbols.
-The broker connector is Alpaca, a US broker, so placing an NSE order needs an
-Indian broker's connector. The analyst, the Pelosi tracker and the news
-skill's SEC filings are US-only. Prices still print with `$`: the numbers are
-in your account's currency.
+The stop and the target land on the NSE's tick (the price step, 0.10 for a
+stock between 1,000 and 5,000), so a broker accepts them.
+
+A `.NS` order is ticketed for Zerodha (Kite), not Alpaca: an intraday entry,
+then a stop-loss order at the plan's stop. No order waits at the target: the
+alerts skill rings there. Zerodha has no paper account, so while
+`"paper": true` a `.NS` ticket is practice only and nothing is placed. With
+`"paper": false` the ticket shows what to enter in the Kite app and the exact
+`place_order` call for your own Kite connector (Zerodha's hosted connector
+reads the account but does not place orders).
+
+The analyst, the Pelosi tracker and the news skill's SEC filings are US-only.
+Prices still print with `$`: the numbers are in your account's currency.
 
 ## The tools
 

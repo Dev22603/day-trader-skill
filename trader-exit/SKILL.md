@@ -123,6 +123,13 @@ set `"flat_by"` inside the `"nse"` block of `trader/config.json` or pass
 `--flat-by`; a time at or after the 15:30 close is refused. The top-level
 `flat_by` (15:55) is a New York time and only applies to US symbols.
 
+The stop and the target land on the NSE's tick, the price step a broker
+accepts: 0.01 under 250, 0.05 up to 1,000, 0.10 up to 5,000, 0.50 up to
+10,000, 1.00 up to 20,000, 5.00 above. The stop rounds down to it and an R
+target rounds up, so the reward:risk is never under the R asked for. The
+exchange re-slabs each stock monthly: if the broker refuses a price for its
+tick size, pass the stock's own step with `--tick X`.
+
 ## What it never does
 
 It never places an order, never sizes a position, never widens a stop to

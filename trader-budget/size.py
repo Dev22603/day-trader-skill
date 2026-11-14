@@ -451,6 +451,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         "max_loss_per_trade_usd": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
         "cost": cost, "max_loss": loss, "flat_by": plan.get("flat_by") or c.get("flat_by"),
         "order_type": "limit" if limit is not None else "market", "refusal": refusal,
+        **({"tick": plan["tick"]} if plan.get("tick") else {}),   # the NSE price step trader-exit used
     }
 
 
@@ -477,6 +478,8 @@ def bracket_order(s):
                  "risk_per_share": s["risk_per_share"], "max_loss": s["max_loss"], "setup": s["setup"],
                  "entry_time": s["entry_time"], "flat_by": s["flat_by"]},
     })
+    if s.get("tick"):
+        o["plan"]["tick"] = s["tick"]      # trader-broker puts a Zerodha stop-loss's limit on it
     return o
 
 

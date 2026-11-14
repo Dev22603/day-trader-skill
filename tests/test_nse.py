@@ -239,7 +239,36 @@ class Exit(Files):
         code, out, err = run(exitp, ["plan", "--symbol", "TSLA", "--entry", "364.18", "--or-high", "362.18",
                                      "--or-low", "354.47", "--date", "2026-10-19", "--time", "10:15 AM",
                                      "--now", "2026-10-19 10:16", "--config", CFG_PATH, "--json"])
-        self.assertEqual(json.loads(out)["flat_by"], "15:55", err)
+        plan = json.loads(out)
+        self.assertEqual(plan["flat_by"], "15:55", err)
+        self.assertEqual((plan["stop"], plan["target"]), (358.32, 375.9))     # to the cent, as before
+        self.assertNotIn("tick", plan)
+
+    def tick_plan(self, entry_px, high, low, *more):
+        code, out, err = run(exitp, ["plan", "--symbol", SYM, "--entry", str(entry_px), "--or-high", str(high),
+                                     "--or-low", str(low), "--date", "2026-11-16", "--time", "9:40 AM",
+                                     "--now", "2026-11-16 09:41", "--config", self.path("none.json"), "--json"]
+                             + list(more))
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_the_stop_and_target_sit_on_the_nse_tick(self):
+        self.assertEqual([float(exitp.nse_tick(p)) for p in (187.44, 250, 1000, 1000.05, 5000, 7500, 10919, 25000)],
+                         [0.01, 0.05, 0.05, 0.10, 0.10, 0.50, 1.00, 5.00])
+        p = self.tick_plan(2442, 2434.90, 2410.50, "--target", "1R")           # the midpoint is on the tick already
+        self.assertEqual((p["stop"], p["target"], p["tick"], p["reward_risk"]), (2422.7, 2461.3, 0.1, 1.0))
+        p = self.tick_plan(1500, 1498.05, 1490.20, "--target", "1R")           # midpoint 1494.125: down to 1494.10
+        self.assertEqual((p["stop"], p["target"], p["risk_per_share"]), (1494.1, 1505.9, 5.9))
+        self.assertIn("rounded down to the 0.10 tick", p["stop_detail"])
+        p = self.tick_plan(1500, 1498.05, 1490.20, "--target", "1.5R")         # 1508.85: an R target rounds up
+        self.assertEqual(p["target"], 1508.9)
+        self.assertGreaterEqual(p["reward_risk"], 1.5)
+        p = self.tick_plan(187.44, 187.30, 186.40, "--target", "1R")           # under 250 the tick is the paisa
+        self.assertEqual((p["stop"], p["tick"]), (186.85, 0.01))
+        p = self.tick_plan(1500, 1498.05, 1490.20, "--target", "1R", "--tick", "0.05")
+        self.assertEqual((p["stop"], p["tick"]), (1494.1, 0.05))
+        p = self.tick_plan(1500, 1498.05, 1490.25, "--target", "1R", "--tick", "0.05")   # 1494.15 is on a 0.05 tick
+        self.assertEqual(p["stop"], 1494.15)
 
 
 def order(sym=SYM, qty=1, entry_px=1500.0, stop=1495.0, target=1506.0):
@@ -411,6 +440,136 @@ class BudgetAndBroker(Files):
             doc = json.load(fh)
         self.assertEqual(doc["source"], "ticket.py flatten RELIANCE.NS on 2026-11-16")
         self.assertIn("flat by 15:15 India", doc["orders"][0]["why"])
+
+
+class Zerodha(Files):
+    """A .NS order is ticketed for Zerodha Kite: an intraday entry, then a stop-loss order."""
+
+    def setUp(self):
+        Files.setUp(self)
+        with open(CFG_PATH) as fh:
+            self.cfg = json.load(fh)
+        self.orders = self.write("orders.json", {"orders": [dict(order(SYM, 2), why="orb")]})
+        self.state = self.path("state.json")
+        self.risk = self.path("risk.json")
+
+    def args(self, cmd, *more, **kw):
+        cfg = self.write("config.json", dict(self.cfg, **kw))
+        return [cmd, "--orders", self.orders, "--config", cfg, "--risk", self.risk, "--state", self.state,
+                "--now", "2026-11-16 10:00"] + list(more)
+
+    def passed(self):
+        """trader-risk's PASS for the orders file, the way check.py records it."""
+        with open(self.orders) as fh:
+            orders = json.load(fh)["orders"]
+        check.use_market([SYM])
+        self.write("risk.json", check.check(orders, self.cfg, now=check.parse_now("2026-11-16 10:00")))
+
+    def test_the_place_order_arguments(self):
+        entry_call, stop_call = ticket.kite_orders(order(SYM, 2, 1500.0, 1495.0, 1506.0))
+        self.assertEqual(entry_call, {"variety": "regular", "exchange": "NSE", "tradingsymbol": "RELIANCE",
+                                      "transaction_type": "BUY", "quantity": 2, "order_type": "MARKET",
+                                      "product": "MIS", "validity": "DAY", "tag": "daytrader"})
+        # the stop-loss: trigger at the plan's stop, limit 0.5% under it, down to the 0.10 tick
+        self.assertEqual(stop_call, {"variety": "regular", "exchange": "NSE", "tradingsymbol": "RELIANCE",
+                                     "transaction_type": "SELL", "quantity": 2, "order_type": "SL",
+                                     "trigger_price": 1495.0, "price": 1487.5, "product": "MIS",
+                                     "validity": "DAY", "tag": "daytrader"})
+        limit = dict(order("M&M.NS", 1, 3000.0, 2990.0, 3012.0), type="limit", limit_price="3000.00")
+        calls = ticket.kite_orders(limit, {"nse": {"stop_limit_buffer_pct": 1}})
+        self.assertEqual((calls[0]["tradingsymbol"], calls[0]["order_type"], calls[0]["price"]), ("M&M", "LIMIT", 3000.0))
+        self.assertEqual(calls[1]["price"], 2960.1)                      # 2990 less 1%
+        low = ticket.kite_orders(dict(order("TATASTEEL.NS", 10, 187.44, 186.85, 188.03)))
+        self.assertEqual(low[1]["price"], 185.91)                        # under 250 the tick is 0.01
+        knob = dict(order(SYM, 1, 1500.0, 1494.15, 1506.0))
+        knob["plan"]["tick"] = 0.05                                      # trader-exit --tick 0.05 comes through
+        self.assertEqual(ticket.kite_orders(knob)[1]["price"], 1486.65)
+        sell = ticket.kite_orders({"symbol": SYM, "side": "sell", "qty": "2", "type": "market"})
+        self.assertEqual((len(sell), sell[0]["transaction_type"], sell[0]["order_type"]), (1, "SELL", "MARKET"))
+        for bad in ({"symbol": SYM, "side": "buy", "notional": "500", "type": "market"},
+                    {"symbol": SYM, "side": "buy", "qty": "1", "type": "trailing_stop"}):
+            with self.assertRaises(ticket.TicketError):
+                ticket.kite_orders(bad)
+
+    def test_who_gets_the_order(self):
+        self.assertEqual(ticket.broker_of(self.cfg, {"symbol": SYM}), "kite")
+        self.assertEqual(ticket.broker_of(self.cfg, {"symbol": "TSLA"}), "alpaca")
+        self.assertEqual(ticket.broker_of({"broker": "ibkr"}, {"symbol": "TSLA"}), "ibkr")
+        self.assertEqual(ticket.broker_of({"broker": "ibkr"}, {"symbol": SYM}), "kite")
+        self.assertEqual(ticket.broker_of({"nse": {"broker": "other"}}, {"symbol": SYM}), "other")
+
+    def test_practice_mode_places_nothing(self):
+        self.passed()
+        code, out, err = run(ticket, self.args("show"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("ORDER 1 of 1, PRACTICE (\"paper\": true), Zerodha Kite", out)
+        self.assertIn("Practice only: Zerodha has no paper account, so nothing is placed", out)
+        self.assertIn("--broker-id practice --filled-qty 2", out)
+        self.assertNotIn("place_order", out)
+        self.assertNotIn("Alpaca", out)
+        doc = json.loads(run(ticket, self.args("show", "--index", "1", "--json"))[1])
+        self.assertEqual((doc["broker"], doc["practice"], doc["tool"], doc["tool_input"]), ("kite", True, None, None))
+        code, out, _ = run(ticket, self.args("approve", "--index", "1", "--reply", "yes"))
+        self.assertEqual(code, 0)
+        self.assertIn("Practice mode: nothing goes to Zerodha, do not place it in Kite either.", out)
+        self.assertNotIn("place_order", out)
+        with open(self.state) as fh:
+            rec = json.load(fh)["orders"][-1]
+        self.assertEqual((rec["broker"], rec["paper"], rec["at"]), ("kite", True, "2026-11-16T10:00:00+05:30"))
+
+    def test_a_live_ticket_shows_both_ways(self):
+        self.passed()
+        code, out, err = run(ticket, self.args("show", paper=False))
+        self.assertEqual(code, 0, err)
+        self.assertIn("ORDER 1 of 1, LIVE ACCOUNT, REAL MONEY, Zerodha Kite", out)
+        self.assertIn("Way 1, yourself in the Kite app:\n    NSE RELIANCE, Intraday (MIS), BUY 2, Market", out)
+        self.assertIn("when it has filled: NSE RELIANCE, Intraday (MIS), SELL 2, SL, trigger 1495.00, price 1487.50", out)
+        self.assertIn("Way 2, your own Kite connector: Claude calls place_order with exactly:", out)
+        self.assertIn('"tradingsymbol": "RELIANCE"', out)
+        self.assertIn("Zerodha's API refuses a plain market order", out)
+        self.assertIn("for way 2 make it a limit order (size.py --limit).", out)
+        self.assertIn("No order waits at the target 1506.00: trader-alerts rings there", out)
+        self.assertIn("be flat by 15:15.", out)
+        doc = json.loads(run(ticket, self.args("show", "--index", "1", "--json", paper=False))[1])
+        self.assertEqual((doc["tool"], doc["practice"], len(doc["tool_input"])), ("place_order", False, 2))
+        code, out, _ = run(ticket, self.args("approve", "--index", "1", "--reply", "yes", paper=False))
+        self.assertIn("Now place it. In the Kite app: NSE RELIANCE, Intraday (MIS), BUY 2, Market.", out)
+        self.assertIn("Confirm it with get_orders or get_positions", out)
+        code, out, _ = run(ticket, self.args("show", paper=False))             # approved: still how to place it
+        self.assertIn("APPROVED by you at 2026-11-16T10:00:00+05:30, waiting for the order to be placed", out)
+        self.assertIn("Way 1, yourself in the Kite app:", out)
+
+    def test_a_ticket_that_is_not_ready_gives_no_way_to_place_it(self):
+        code, out, _ = run(ticket, self.args("show", paper=False))             # trader-risk has not run
+        self.assertEqual(code, 1)
+        self.assertIn("NOT READY: trader-risk has not checked these orders", out)
+        self.assertNotIn("Way 1", out)
+        self.assertNotIn("place_order", out)
+
+    def test_flatten_for_zerodha(self):
+        argv = ["flatten", "--symbol", SYM, "--qty", "2", "--limit", "1499.5", "--orders", self.orders,
+                "--plan", self.path("none.json"), "--now", "2026-11-16 15:10", "--config"]
+        code, out, err = run(ticket, argv + [CFG_PATH])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Practice mode: nothing is placed at Zerodha.", out)
+        self.assertNotIn("Cancel the stop-loss", out)                     # no real order is waiting
+        code, out, err = run(ticket, argv + [self.write("live.json", dict(self.cfg, paper=False))])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Cancel the stop-loss order still waiting at Zerodha first", out)
+        self.assertNotIn("Alpaca", out)
+        with open(self.orders) as fh:
+            sell = json.load(fh)["orders"][0]
+        self.assertEqual((sell["type"], sell["limit_price"]), ("limit", "1499.50"))
+        self.assertIn("get_positions", sell["why"])
+        self.assertEqual(ticket.kite_orders(sell)[0]["price"], 1499.5)
+
+    def test_a_us_ticket_is_still_alpaca(self):
+        us = self.write("us.json", {"orders": [order("TSLA", 8, 364.18, 358.32, 370.04)]})
+        code, out, _ = run(ticket, ["show", "--orders", us, "--config", CFG_PATH, "--risk", self.risk,
+                                    "--state", self.state, "--now", "2026-10-19 10:15"])
+        self.assertIn("ORDER 1 of 1, PAPER account, Alpaca", out)
+        self.assertIn("Claude will call place_stock_order with exactly:", out)
+        self.assertNotIn("Zerodha", out)
 
 
 class Scanner(Files):
