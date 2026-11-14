@@ -183,8 +183,9 @@ class Entry(Files):
         code, out, _ = self.check("2026-11-16 09:45")
         self.assertEqual(code, 0, out)
         self.assertIn("RELIANCE.NS  Mon 2026-11-16 09:45 IST  opening-range breakout", out)
-        self.assertIn("Opening range 9:15-9:30: high $1498.00, low $1490.00 (3 of 3 bars).", out)
-        self.assertIn("TRIGGERED 9:40 AM at $1500.00: the 9:35 bar (bar 4) closed above the range high", out)
+        self.assertIn("Opening range 9:15-9:30: high Rs 1498.00, low Rs 1490.00 (3 of 3 bars).", out)
+        self.assertIn("TRIGGERED 9:40 AM at Rs 1500.00: the 9:35 bar (bar 4) closed above the range high", out)
+        self.assertNotIn("$", out)                                    # rupees on an NSE run
 
     def test_the_entry_window_is_0930_to_1500(self):
         code, out, _ = self.check("2026-11-16 09:45", "--json")
@@ -570,6 +571,168 @@ class Zerodha(Files):
         self.assertIn("ORDER 1 of 1, PAPER account, Alpaca", out)
         self.assertIn("Claude will call place_stock_order with exactly:", out)
         self.assertNotIn("Zerodha", out)
+
+
+class Costs(Files):
+    """Zerodha's intraday charges: every .NS plan, size and report shows the result after them."""
+
+    def test_the_charges_on_one_trade_to_the_paisa(self):
+        # buy 1 TCS at 2442.00, sell at 2461.30 (zerodha.com/charges, equity intraday, read 2026-11-15)
+        c = ticket.nse_charges(2442.0, 2461.3)
+        self.assertEqual(c, {"brokerage": 1.47,      # 0.03% of 2442.00 + 0.03% of 2461.30
+                             "stt": 0.62,            # 0.025% of the 2461.30 sold
+                             "exchange": 0.15,       # 0.00307% of the 4903.30 traded
+                             "sebi": 0.0,            # Rs 10 a crore: half a paisa here
+                             "stamp": 0.07,          # 0.003% of the 2442.00 bought
+                             "gst": 0.29,            # 18% of brokerage + exchange + SEBI
+                             "total": 2.6})
+        big = ticket.nse_charges(100000.0, 101000.0)                 # 0.03% would be 30: the Rs 20 cap applies
+        self.assertEqual(big["brokerage"], 40.0)
+        self.assertEqual(ticket.nse_charges(2442.0, 2461.3, {"brokerage_pct": 0})["brokerage"], 0.0)
+
+    def test_the_three_tools_and_the_example_config_agree(self):
+        self.assertEqual(exitp.NSE_CHARGES, size.NSE_CHARGES)
+        self.assertEqual(size.NSE_CHARGES, ticket.NSE_CHARGES)
+        for mod in (exitp, size):
+            self.assertEqual(mod.nse_charges(2442.0, 2461.3), ticket.nse_charges(2442.0, 2461.3))
+        with open(os.path.join(ROOT, "trader-budget", "config.nse.example.json")) as fh:
+            cfg = json.load(fh)
+        self.assertEqual({k: float(v) for k, v in cfg["nse"]["charges"].items()}, ticket.NSE_CHARGES)
+        self.assertIs(cfg["paper"], True)
+        self.assertEqual((cfg["nse"]["flat_by"], cfg["nse"]["broker"]), ("15:15", "kite"))
+
+    def plan(self, *more):
+        return run(exitp, ["plan", "--symbol", "TCS.NS", "--entry", "2442", "--or-high", "2434.90", "--or-low",
+                           "2410.50", "--date", "2026-11-16", "--time", "9:40 AM", "--target", "1R",
+                           "--now", "2026-11-16 09:41"] + list(more))
+
+    def test_a_plan_shows_the_reward_to_risk_after_costs(self):
+        code, out, err = self.plan("--config", self.path("none.json"), "--json")
+        self.assertEqual(code, 0, err)
+        k = json.loads(out)["costs"]
+        # risk 19.30 a share: +19.30 or -19.30 before costs, +16.70 or -21.88 after
+        # (a sell at the 2422.70 stop costs 2.58: brokerage 1.46, STT 0.61, exchange 0.15, stamp 0.07, GST 0.29)
+        self.assertEqual((k["per_share_at_target"], k["per_share_at_stop"]), (2.6, 2.58))
+        self.assertEqual((k["net_at_target"], k["net_at_stop"], k["reward_risk_after_costs"]), (16.7, -21.88, 0.76))
+        text = self.plan("--config", self.path("none.json"))[1]
+        self.assertIn("After costs   about Rs 2.60 a share for the buy and the sell (Zerodha, equity intraday): "
+                      "+Rs 16.70 at the target,", text)
+        self.assertIn("-Rs 21.88 at the stop, reward:risk 0.76", text)
+        free = self.write("config.json", {"nse": {"charges": {"brokerage_pct": 0, "stt_sell_pct": 0, "exchange_pct": 0,
+                                                             "sebi_per_crore": 0, "stamp_buy_pct": 0}}})
+        self.assertEqual(json.loads(self.plan("--config", free, "--json")[1])["costs"]["reward_risk_after_costs"], 1.0)
+
+    def test_a_us_plan_has_no_costs_block(self):
+        code, out, _ = run(exitp, ["plan", "--symbol", "TSLA", "--entry", "364.18", "--or-high", "362.18", "--or-low",
+                                   "354.47", "--date", "2026-10-19", "--now", "2026-10-19 10:16",
+                                   "--config", self.path("none.json")])
+        self.assertNotIn("After costs", out)
+        self.assertIn("Entry         $364.18", out)                   # dollars, as before
+
+    def test_the_size_report_shows_the_costs_in_rupees(self):
+        plan = self.write("plan.json", dict(PLAN, symbol="TCS.NS", entry=2442.0, stop=2422.7, target=2461.3,
+                                            opening_range={"high": 2434.9, "low": 2410.5, "minutes": 15}))
+        argv = ["--plan", plan, "--config", os.path.join(ROOT, "trader-budget", "config.nse.example.json"),
+                "--portfolio", self.path("none.json"), "--prices", self.write("prices.json", {}),
+                "--now", "2026-11-16 09:41"]
+        code, out, err = run(size, argv)
+        self.assertEqual(code, 0, err)
+        # Rs 500 max loss / 19.30 risk = 25 shares, but the position cap and the max order stop at 15
+        self.assertIn("Size: 15 shares of TCS.NS = Rs 36,630 at 2442.00. Max loss at the stop: 15 x 19.30 = Rs 289.50.", out)
+        # 36,630.00 bought, 36,919.50 sold at the target: brokerage 22.06, STT 9.23, exchange 2.26, SEBI 0.07,
+        # stamp 1.10, GST 4.39 = 39.11. Sold at the stop for 36,340.50 instead: 38.75.
+        self.assertIn("Costs (Zerodha, equity intraday, about): Rs 39.11 if the target fills, Rs 38.75 if the stop fills.", out)
+        self.assertIn("brokerage Rs 22.06, STT Rs 9.23, exchange and SEBI Rs 2.33, stamp duty Rs 1.10, GST Rs 4.39.", out)
+        self.assertIn("After costs: +Rs 250.39 at the target, -Rs 328.25 at the stop.", out)
+        self.assertNotIn("$", out)
+        k = json.loads(run(size, argv + ["--json"])[1])["sizing"]["costs"]
+        self.assertEqual((k["at_target"], k["net_at_target"], k["net_at_stop"]), (39.11, 250.39, -328.25))
+        tight = self.write("tight.json", {"budget": 50000, "max_loss_per_trade_usd": 290, "max_order_usd": 40000})
+        code, out, _ = run(size, argv[:2] + ["--config", tight] + argv[4:])
+        self.assertIn("With costs the loss at the stop is Rs 328.25, over your Rs 290 max loss per trade.", out)
+
+
+class Report(Files):
+    def log(self, *fills, **kw):
+        recs = [{"at": d + "T10:00:00+05:30", "date": d, "status": "filled", "symbol": s, "side": side,
+                 "qty": str(q), "price": p} for d, s, side, q, p in fills]
+        recs += kw.get("extra", [])
+        return self.write("broker.json", {"orders": recs})
+
+    def test_before_costs_costs_and_after_costs(self):
+        entry_rec = {"at": "2026-11-13T09:40:00+05:30", "date": "2026-11-13", "status": "placed", "symbol": "TCS.NS",
+                     "side": "buy", "kind": "entry", "max_loss": 19.3}
+        state = self.log(("2026-11-13", "TCS.NS", "buy", 1, 2442.0), ("2026-11-13", "TCS.NS", "sell", 1, 2461.3),
+                         ("2026-11-16", "INFY.NS", "buy", 10, 1149.0), ("2026-11-16", "INFY.NS", "sell", 10, 1143.0),
+                         ("2026-11-16", SYM, "buy", 2, 1500.0), extra=[entry_rec])
+        argv = ["report", "--state", state, "--config", self.path("none.json"), "--now", "2026-11-16 15:20"]
+        code, out, err = run(ticket, argv)
+        self.assertEqual(code, 0, err)
+        self.assertIn("Trade report: 2 closed trades, 2026-11-13 to 2026-11-16.", out)
+        self.assertIn("2026-11-13  TCS.NS        1 x 2442.00 -> 2461.30   before costs +Rs 19.30   costs Rs 2.60   "
+                      "after costs +Rs 16.70   +0.87R", out)
+        # INFY: 11,490 bought, 11,430 sold: brokerage 6.88, STT 2.86, exchange 0.70, SEBI 0.02, stamp 0.34, GST 1.37
+        self.assertIn("2026-11-16  INFY.NS       10 x 1149.00 -> 1143.00   before costs -Rs 60   costs Rs 12.17   "
+                      "after costs -Rs 72.17", out)
+        self.assertIn("Before costs: -Rs 40.70. Costs: Rs 14.77. After costs: -Rs 55.47.", out)
+        self.assertIn("Won 1, lost 1: win rate 50%. Average win Rs 16.70, average loss Rs 72.17, biggest loss Rs 72.17.", out)
+        self.assertIn("Average result a trade, after costs: -Rs 27.73.", out)
+        self.assertIn("Still open: 2 shares of RELIANCE.NS bought on 2026-11-16 with no sell recorded", out)
+        self.assertNotIn("$", out)
+        doc = json.loads(run(ticket, argv + ["--json"])[1])
+        self.assertEqual((doc["summary"]["trades"], doc["summary"]["net"], doc["trades"][0]["r"]), (2, -55.47, 0.87))
+        code, out, _ = run(ticket, argv + ["--days", "1"])            # today only
+        self.assertIn("Trade report: 1 closed trade, 2026-11-16 to 2026-11-16.", out)
+
+    def test_no_trades_and_a_us_log(self):
+        code, out, _ = run(ticket, ["report", "--state", self.path("none.json"), "--config", self.path("none.json")])
+        self.assertEqual(code, 1)
+        self.assertIn("No closed trades in", out)
+        us = self.log(("2026-10-19", "TSLA", "buy", 8, 364.2), ("2026-10-19", "TSLA", "sell", 8, 370.04))
+        code, out, _ = run(ticket, ["report", "--state", us, "--config", self.path("none.json")])
+        self.assertIn("before costs +$46.72   costs $0   after costs +$46.72", out)      # dollars, no Zerodha charges
+
+
+class Printing(Files):
+    def test_a_character_the_console_cannot_print_does_not_crash(self):
+        class Cp1252(io.StringIO):
+            encoding = "cp1252"
+
+            def write(self, text):
+                text.encode("cp1252")             # what a Windows pipe does: raises on the rupee sign
+                return io.StringIO.write(self, text)
+        for mod in (entry, exitp, alerts, check, scan, tm, size, ticket, news):
+            mod.use_market(["TSLA"])
+            real, out = Cp1252(), None
+            out = mod._Out(real)
+            out.write(u"price ₹2,442 ☃ $5\n")              # a rupee sign and a snowman
+            self.assertEqual(real.getvalue(), "price Rs 2,442 ? $5\n", mod.__name__)
+        news.use_market([SYM])
+        real = Cp1252()
+        news._Out(real).write(u"gains ₹500 or $6\n")
+        self.assertEqual(real.getvalue(), "gains Rs 500 or Rs 6\n")
+        news.use_market(["TSLA"])
+
+
+class Universe(Files):
+    def test_a_nifty_list_becomes_ns_symbols(self):
+        nse_dir = os.path.join(ROOT, "tests", "fixtures", "trader-scanner", "nse")   # 7 real rows of the Nifty 50 list
+        out_file = self.path("universe.txt")
+        code, out, err = run(scan, ["universe", "--nse", "nifty50", "--offline", nse_dir, "--out", out_file])
+        self.assertEqual(code, 0, err)
+        self.assertIn("NSE nifty50 list: 7 stocks (ordinary shares, series EQ), as .NS symbols.", out)
+        with open(out_file, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        self.assertEqual(lines[0], "BAJAJ-AUTO.NS|Bajaj Auto Ltd.")
+        self.assertIn("M&M.NS|Mahindra & Mahindra Ltd.", lines)
+        self.assertEqual(scan.symbols_from_file(out_file)[:2], ["BAJAJ-AUTO.NS", "HDFCBANK.NS"])
+        self.assertTrue(scan.use_market(scan.symbols_from_file(out_file)))        # a scan of it runs on the NSE clock
+        scan.use_market(["TSLA"])
+        self.assertEqual(scan.parse_nse_list("Company Name,Industry,Symbol,Series,ISIN Code\nA Ltd.,X,AAA,BE,I1\n"), [])
+        with self.assertRaises(scan.ScanError):
+            scan.parse_nse_list("Symbol|Security Name\nAAPL|Apple\n")
+        code, _, err = run(scan, ["universe", "--nse", "nifty100", "--offline", nse_dir, "--no-write"])
+        self.assertIn("no ind_nifty100list.csv in", err)
 
 
 class Scanner(Files):

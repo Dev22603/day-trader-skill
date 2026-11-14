@@ -130,6 +130,17 @@ target rounds up, so the reward:risk is never under the R asked for. The
 exchange re-slabs each stock monthly: if the broker refuses a price for its
 tick size, pass the stock's own step with `--tick X`.
 
+**After costs.** A `.NS` plan also shows what is left once the broker and the
+taxes are paid: Zerodha's intraday brokerage (0.03% or Rs 20 an order), STT
+on the sell, the exchange and SEBI charges, stamp duty on the buy and GST,
+about 0.1% of the trade for the buy and the sell together. The "After costs"
+lines give the cost a share, the result at the target and at the stop, and
+the reward:risk after costs. A plan that is 1.0 before costs is usually about
+0.75 to 0.9 after them. Always read the user the after-costs numbers: that is
+the trade they are really taking. The rates are in `NSE_CHARGES` in `exit.py`
+(zerodha.com/charges, read 2026-11-15); `"nse": {"charges": {...}}` in
+`trader/config.json` overrides them.
+
 ## What it never does
 
 It never places an order, never sizes a position, never widens a stop to

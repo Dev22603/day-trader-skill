@@ -71,6 +71,14 @@ NSE = False
 PLACE = "New York"
 KITE_STOP_BUFFER_PCT = 0.5   # a Zerodha stop-loss (SL) sells at a limit this far under its trigger
 BROKER_NAMES = {"ibkr": "Interactive Brokers", "kite": "Zerodha Kite"}
+NSE_CHARGES = {  # Zerodha, equity intraday, from zerodha.com/charges (read 2026-11-15)
+    "brokerage_pct": 0.03, "brokerage_max": 20.0,   # per executed order, whichever is lower
+    "stt_sell_pct": 0.025,                           # securities transaction tax, on the sell
+    "exchange_pct": 0.00307,                         # the NSE's transaction charge, on both sides
+    "sebi_per_crore": 10.0,                          # Rs 10 for every Rs 1,00,00,000 traded
+    "stamp_buy_pct": 0.003,                          # stamp duty, on the buy
+    "gst_pct": 18.0,                                 # on brokerage + exchange + SEBI
+}
 
 
 class TicketError(Exception):
@@ -837,6 +845,116 @@ def cmd_flatten(a):
     return 0
 
 
+def nse_charges(buy_value, sell_value, rates=None):
+    """What one intraday round trip (a buy order and a sell order) costs at Zerodha, in
+    rupees, line by line and in total. An estimate: the broker's contract note rounds
+    each line its own way. `rates` overrides NSE_CHARGES (the config's "nse": {"charges"})."""
+    r = dict(NSE_CHARGES)
+    r.update(rates or {})
+    b, s = float(buy_value), float(sell_value)
+    out = {"brokerage": sum(min(v * r["brokerage_pct"] / 100.0, r["brokerage_max"]) for v in (b, s) if v > 0),
+           "stt": s * r["stt_sell_pct"] / 100.0,
+           "exchange": (b + s) * r["exchange_pct"] / 100.0,
+           "sebi": (b + s) * r["sebi_per_crore"] / 1e7,
+           "stamp": b * r["stamp_buy_pct"] / 100.0}
+    out["gst"] = (out["brokerage"] + out["exchange"] + out["sebi"]) * r["gst_pct"] / 100.0
+    out = {k: round(v, 2) for k, v in out.items()}
+    out["total"] = round(sum(out.values()), 2)       # the lines add up to the total
+    return out
+
+
+def closed_trades(state, rates=None):
+    """The log's fills as day trades, one per (day, stock): that day's buys against that
+    day's sells. -> (trades, still_open). Costs are Zerodha's for a .NS stock, none otherwise.
+    R is the result after costs over the max loss the entry was approved with."""
+    days, planned = {}, {}
+    for r in state.get("orders", []):
+        key = (rec_day(r), str(r.get("symbol", "")).upper())
+        if r.get("kind") == "entry" and _f(r.get("max_loss")):
+            planned[key] = _f(r["max_loss"])
+        q, p, side = _f(r.get("qty")), _f(r.get("price")), str(r.get("side", "")).lower()
+        if r.get("status") != "filled" or not q or not p or side not in ("buy", "sell"):
+            continue
+        d = days.setdefault(key, {"buy": [0.0, 0.0], "sell": [0.0, 0.0]})
+        d[side][0] += q
+        d[side][1] += q * p
+    trades, still_open = [], []
+    for (day, sym), d in sorted(days.items()):
+        (bq, bv), (sq, sv) = d["buy"], d["sell"]
+        qty = min(bq, sq)
+        if bq > sq + 1e-9:
+            still_open.append({"date": day, "symbol": sym, "qty": bq - sq})
+        if qty <= 0:
+            continue
+        buy, sell = bv / bq, sv / sq
+        gross = round(qty * (sell - buy), 2)
+        costs = nse_charges(qty * buy, qty * sell, rates)["total"] if sym.endswith(".NS") else 0.0
+        net = round(gross - costs, 2)
+        risk = planned.get((day, sym))
+        trades.append({"date": day, "symbol": sym, "qty": qty, "buy": round(buy, 2), "sell": round(sell, 2),
+                       "gross": gross, "costs": costs, "net": net, "r": round(net / risk, 2) if risk else None})
+    return trades, still_open
+
+
+def _signed(v):
+    return ("-" if v < 0 else "+") + _money(abs(v))
+
+
+def cmd_report(a):
+    cfg = read_json(a.config, "config", required=False) or {}
+    nse_cfg = cfg.get("nse") if isinstance(cfg.get("nse"), dict) else {}
+    state = load_state(a.state)
+    trades, still_open = closed_trades(state, nse_cfg.get("charges") if isinstance(nse_cfg.get("charges"), dict) else None)
+    fills = [r for r in state.get("orders", []) if r.get("status") == "filled"]
+    nse = bool(fills) and str(fills[-1].get("symbol", "")).upper().endswith(".NS")
+    use_market([fills[-1].get("symbol")] if fills else [])    # one currency a report: the latest fill's market
+    other = [t for t in trades if t["symbol"].endswith(".NS") != nse]
+    trades = [t for t in trades if t["symbol"].endswith(".NS") == nse]
+    still_open = [o for o in still_open if o["symbol"].endswith(".NS") == nse]
+    now, today = _clock(a)
+    if a.days:
+        first = (datetime.date.fromisoformat(today) - datetime.timedelta(days=a.days - 1)).isoformat()
+        trades = [t for t in trades if t["date"] >= first]
+    wins = [t for t in trades if t["net"] > 0]
+    losses = [t for t in trades if t["net"] < 0]
+    total = {k: round(sum(t[k] for t in trades), 2) for k in ("gross", "costs", "net")}
+    summary = dict(total, trades=len(trades), won=len(wins), lost=len(losses),
+                   win_rate=round(100.0 * len(wins) / len(trades), 1) if trades else None,
+                   average_win=round(sum(t["net"] for t in wins) / len(wins), 2) if wins else None,
+                   average_loss=round(sum(t["net"] for t in losses) / len(losses), 2) if losses else None,
+                   biggest_loss=min(t["net"] for t in losses) if losses else None,
+                   average_per_trade=round(total["net"] / len(trades), 2) if trades else None)
+    if a.json:
+        print(json.dumps({"trades": trades, "open": still_open, "summary": summary}, indent=2))
+        return 0 if trades else 1
+    if not trades:
+        print("No closed trades in %s%s: a trade shows here once its buy and its sell are both recorded "
+              "(ticket.py result --filled-qty, ticket.py fill)." % (a.state, (" in the last %d days" % a.days) if a.days else ""))
+    else:
+        print("Trade report: %d closed trade%s, %s to %s." % (len(trades), "" if len(trades) == 1 else "s",
+                                                             trades[0]["date"], trades[-1]["date"]))
+        for t in trades:
+            print("  %s  %-13s %s x %s -> %s   before costs %s   costs %s   after costs %s%s"
+                  % (t["date"], t["symbol"], _str_num(t["qty"]), _p(t["buy"]), _p(t["sell"]), _signed(t["gross"]),
+                     _money(t["costs"]), _signed(t["net"]), ("   %+.2fR" % t["r"]) if t["r"] is not None else ""))
+        print("Before costs: %s. Costs: %s. After costs: %s." % (_signed(total["gross"]), _money(total["costs"]),
+                                                                _signed(total["net"])))
+        print("Won %d, lost %d: win rate %.0f%%. Average win %s, average loss %s, biggest loss %s."
+              % (len(wins), len(losses), summary["win_rate"],
+                 _money(summary["average_win"]) if wins else "none",
+                 _money(-summary["average_loss"]) if losses else "none",
+                 _money(-summary["biggest_loss"]) if losses else "none"))
+        print("Average result a trade, after costs: %s." % _signed(summary["average_per_trade"]))
+    for o in still_open:
+        print("Still open: %s %s of %s bought on %s with no sell recorded (ticket.py fill records it)."
+              % (_str_num(o["qty"]), "share" if o["qty"] == 1 else "shares", o["symbol"], o["date"]))
+    if other:
+        print("Not shown: %d trade%s in the other market (%s stocks)." % (len(other), "" if len(other) == 1 else "s",
+                                                                           "US" if nse else ".NS"))
+    print("Practice fills and real fills are in the same log. Education and tooling, not financial advice.")
+    return 0 if trades else 1
+
+
 def cmd_log(a):
     state = load_state(a.state)
     use_market([r.get("symbol") for r in state.get("orders", [])[-1:]])   # "today" follows the latest record's market
@@ -856,7 +974,7 @@ def cmd_log(a):
     return 0
 
 
-def main(argv=None):
+def _main(argv=None):
     ap = argparse.ArgumentParser(description="Order tickets and your yes (trader-broker). Never places orders.")
     sub = ap.add_subparsers(dest="cmd")
 
@@ -915,16 +1033,56 @@ def main(argv=None):
     p.add_argument("--state", default="trader/state/broker.json")
     clock(p)
     p.add_argument("--all", action="store_true")
+    p = sub.add_parser("report", help="how your closed trades went: before costs, costs, after costs")
+    p.add_argument("--state", default="trader/state/broker.json")
+    p.add_argument("--config", default="trader/config.json", help="for your own charge rates (\"nse\": {\"charges\"})")
+    p.add_argument("--days", type=int, help="only the last N days")
+    p.add_argument("--json", action="store_true")
+    clock(p)
     a = ap.parse_args(argv)
     if not a.cmd:
         ap.print_help()
         return 1
     try:
         return {"show": cmd_show, "approve": cmd_approve, "decline": cmd_decline, "result": cmd_result,
-                "fill": cmd_fill, "flatten": cmd_flatten, "log": cmd_log}[a.cmd](a)
+                "fill": cmd_fill, "flatten": cmd_flatten, "log": cmd_log, "report": cmd_report}[a.cmd](a)
     except TicketError as e:
         print("ticket.py: %s" % e, file=sys.stderr)
         return 1
+
+
+
+class _Out(object):
+    """The real stream with two fixes where text is printed: on an NSE run "$" comes out
+    as "Rs ", and a character the console cannot print is replaced instead of crashing
+    (a Windows console in code page 1252 has no rupee sign, and Indian headlines do)."""
+    # ponytail: the currency sign is swapped at the print boundary. Thread a currency
+    # through the format strings if a third one ever shows up.
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        if NSE:
+            text = text.replace("$", "Rs ")
+        text = text.replace("₹", "Rs ")
+        try:
+            return self._stream.write(text)
+        except UnicodeEncodeError:
+            enc = getattr(self._stream, "encoding", None) or "ascii"
+            return self._stream.write(text.encode(enc, "replace").decode(enc))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def main(argv=None):
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _Out(out), _Out(err)
+    try:
+        return _main(argv)
+    finally:
+        sys.stdout, sys.stderr = out, err
 
 
 if __name__ == "__main__":

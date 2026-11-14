@@ -66,18 +66,21 @@ response, a v8 chart, or a bundle {"TSLA": <v8 json>, ...}. .json.gz is fine.
 
 Indian market: when every symbol in the list ends in .NS (RELIANCE.NS) the
 scan runs on the NSE clock: India time, 9:15 to 15:30, the NSE holiday list,
-no new entries after 15:00. The symbols go to Yahoo unchanged. `universe`
-only knows the US lists: for the NSE give your own (--symbols, --watchlist, or
-a trader/universe.txt of .NS symbols). One scan runs on one clock, so a list
-that mixes .NS and US symbols is refused.
+no new entries after 15:00. The symbols go to Yahoo unchanged.
+`universe --nse nifty100` (or nifty50, nifty200, nifty500) downloads that NSE
+index's stocks from nsearchives.nseindia.com and writes them as .NS symbols;
+--symbols, --watchlist or your own trader/universe.txt work too. One scan runs
+on one clock, so a list that mixes .NS and US symbols is refused.
 
 A scan is a list of charts that match a rule, not a list of stocks to buy.
 Exit code 0 when the scan found something, 1 when it did not or could not run.
 """
 
 import argparse
+import csv
 import datetime
 import gzip
+import io
 import json
 import os
 import re
@@ -91,6 +94,9 @@ UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakesch
 YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
 NASDAQ_FILES = ("nasdaqlisted.txt", "otherlisted.txt")
 NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/"
+NSE_LISTS = ("nifty50", "nifty100", "nifty200", "nifty500")      # universe --nse: an NSE index's stocks
+NSE_LIST_URL = "https://nsearchives.nseindia.com/content/indices/ind_%slist.csv"
+NSE_UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0)"   # nseindia.com never answers a User-Agent with a URL in it
 SPARK_MAX = 20      # Yahoo's spark answers 400 above 20 symbols
 PAUSE = 0.3         # seconds between requests: be polite to free endpoints
 BACKOFF = 5.0       # seconds to wait before the one retry after a 429
@@ -301,8 +307,8 @@ def day_label(d):
 
 # ---------------------------------------------------------------- network
 
-def http_get(url, timeout=20):
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+def http_get(url, timeout=20, ua=UA):
+    req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": "*/*"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", "replace")
 
@@ -930,7 +936,56 @@ def money(x):
 
 # ---------------------------------------------------------------- commands
 
+def parse_nse_list(text):
+    """The NSE's index list CSV (Company Name, Industry, Symbol, Series, ISIN Code) ->
+    [(SYMBOL.NS, company)], ordinary shares (series EQ) only, in the file's order."""
+    rows = list(csv.DictReader(io.StringIO(text.lstrip("﻿").replace("\r", ""))))
+    if not rows or "Symbol" not in rows[0] or "Company Name" not in rows[0]:
+        raise ScanError("not an NSE index list (it wants the columns Company Name and Symbol)")
+    out = []
+    for r in rows:
+        sym = (r.get("Symbol") or "").strip().upper()
+        if sym and (r.get("Series") or "EQ").strip().upper() == "EQ":
+            out.append((sym + ".NS", " ".join((r.get("Company Name") or "").split())))
+    return out
+
+
+def cmd_universe_nse(a):
+    """universe --nse nifty100: an NSE index's stocks as .NS symbols -> trader/universe.txt."""
+    fname = "ind_%slist.csv" % a.nse
+    if a.offline:
+        p = os.path.join(a.offline, fname)
+        if not os.path.exists(p):
+            raise ScanError("no %s in %s" % (fname, a.offline))
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    else:
+        try:
+            text = http_get(NSE_LIST_URL % a.nse, timeout=30, ua=NSE_UA)
+        except urllib.error.HTTPError as e:
+            raise ScanError("nseindia.com answered HTTP %d for %s" % (e.code, fname))
+        except (urllib.error.URLError, OSError) as e:
+            raise ScanError("could not reach nseindia.com: %s" % getattr(e, "reason", e))
+    kept = parse_nse_list(text)
+    if not a.no_write and kept:
+        d = os.path.dirname(a.out)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(a.out, "w", encoding="utf-8") as fh:
+            for sym, name in kept:
+                fh.write("%s|%s\n" % (sym, name))
+    if a.json:
+        print(json.dumps({"count": len(kept), "list": a.nse, "out": None if a.no_write else a.out}, indent=2))
+    else:
+        print("NSE %s list: %d stocks (ordinary shares, series EQ), as .NS symbols." % (a.nse, len(kept)))
+        if not a.no_write and kept:
+            print("Wrote %s (one SYMBOL|Name a line)." % a.out)
+    return 0 if kept else 1
+
+
 def cmd_universe(a):
+    if getattr(a, "nse", None):
+        return cmd_universe_nse(a)
     t0 = time.time()
     texts = {}
     for k, fname in enumerate(NASDAQ_FILES):
@@ -1127,13 +1182,14 @@ def _p(x):
     return "{:,.2f}".format(x)
 
 
-def main(argv=None):
+def _main(argv=None):
     ap = argparse.ArgumentParser(description="Chart Scanner (trader-scanner): daily setups and opening-range breakouts.")
     sub = ap.add_subparsers(dest="cmd")
 
     p = sub.add_parser("universe", help="download Nasdaq Trader's lists -> trader/universe.txt")
     p.add_argument("--out", default=DEFAULT_UNIVERSE)
     p.add_argument("--offline", metavar="DIR", help="a folder with nasdaqlisted.txt and otherlisted.txt")
+    p.add_argument("--nse", choices=NSE_LISTS, help="the stocks of an NSE index instead, as .NS symbols")
     p.add_argument("--no-write", action="store_true")
     p.add_argument("--pause", type=float, default=PAUSE)
     p.add_argument("--json", action="store_true")
@@ -1177,6 +1233,40 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("scan.py: stopped", file=sys.stderr)
         return 1
+
+
+
+class _Out(object):
+    """The real stream with two fixes where text is printed: on an NSE run "$" comes out
+    as "Rs ", and a character the console cannot print is replaced instead of crashing
+    (a Windows console in code page 1252 has no rupee sign, and Indian headlines do)."""
+    # ponytail: the currency sign is swapped at the print boundary. Thread a currency
+    # through the format strings if a third one ever shows up.
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        if NSE:
+            text = text.replace("$", "Rs ")
+        text = text.replace("₹", "Rs ")
+        try:
+            return self._stream.write(text)
+        except UnicodeEncodeError:
+            enc = getattr(self._stream, "encoding", None) or "ascii"
+            return self._stream.write(text.encode(enc, "replace").decode(enc))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def main(argv=None):
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _Out(out), _Out(err)
+    try:
+        return _main(argv)
+    finally:
+        sys.stdout, sys.stderr = out, err
 
 
 if __name__ == "__main__":

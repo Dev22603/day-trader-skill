@@ -63,6 +63,15 @@ If `trader/config.json` does not exist, copy `config.example.json` into
 - **blocked**: tickers they never want to trade.
 - Keep **paper** true until they have watched it work on a paper account.
 
+For Indian stocks (`.NS` symbols) start from `config.nse.example.json`
+instead. Its amounts are in rupees (budget 50,000, max loss 500 a trade, 1,500
+a day, biggest order 40,000, smallest 500): examples to change, not advice.
+Ask for each one in plain words, and say that the key names still end in
+`_usd` although they hold rupees. A max loss of about 1% of the budget is a
+common starting point. Its `"nse"` block holds the Indian clock times and
+Zerodha's charge rates; check the rates against zerodha.com/charges now and
+then.
+
 ## Step 2: size the trade
 
 ```bash
@@ -155,8 +164,14 @@ The NSE has its own three clock settings, built in: `no_entries_before` 09:30,
 `no_entries_after` 15:00 and `flat_by` 15:15. To change one, add an `"nse"`
 block to `trader/config.json`, for example `"nse": {"flat_by": "15:10"}`. The
 top-level ones are New York times and only apply to US symbols. The budget and
-the limits are plain numbers in the account's currency, whatever the `$` and
-the `_usd` key names say.
+the limits are plain numbers in the account's currency, whatever the `_usd`
+key names say; on a `.NS` run the tools print `Rs`, not `$`.
+
+The report for a `.NS` order also shows the costs: Zerodha's intraday
+brokerage and the taxes on the buy and the sell, line by line, and the result
+after costs at the target and at the stop. The size itself is still worked
+out before costs, so the loss at the stop can end a little over the max loss:
+the report says so when it does. Tell the user both numbers.
 
 ## What it never does
 

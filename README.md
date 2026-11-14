@@ -141,9 +141,17 @@ python3 trader-entry/entry.py check RELIANCE.NS --write
 python3 trader-exit/exit.py plan --stop or-mid --target 1R --write     # flat by 15:15 IST
 ```
 
-`scan.py universe` only downloads the US lists: pass your own `.NS` symbols.
-The stop and the target land on the NSE's tick (the price step, 0.10 for a
-stock between 1,000 and 5,000), so a broker accepts them.
+`scan.py universe --nse nifty100` downloads an NSE index's stocks (nifty50,
+nifty100, nifty200 or nifty500) as `.NS` symbols for the scanner. The stop and
+the target land on the NSE's tick (the price step, 0.10 for a stock between
+1,000 and 5,000), so a broker accepts them.
+
+Money on a `.NS` run prints as `Rs`. Start from
+`trader-budget/config.nse.example.json`: the same rules with rupee-sized
+amounts. Every `.NS` plan and order shows the result after costs (Zerodha's
+intraday brokerage and the taxes, about 0.1% of the trade for the buy and the
+sell together), and `ticket.py report` shows how your closed trades went:
+before costs, costs, after costs.
 
 A `.NS` order is ticketed for Zerodha (Kite), not Alpaca: an intraday entry,
 then a stop-loss order at the plan's stop. No order waits at the target: the
@@ -154,7 +162,6 @@ alerts skill rings there. Zerodha has no paper account, so while
 reads the account but does not place orders).
 
 The analyst, the Pelosi tracker and the news skill's SEC filings are US-only.
-Prices still print with `$`: the numbers are in your account's currency.
 
 ## The tools
 

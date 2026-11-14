@@ -191,10 +191,13 @@ oversold bounce).
 When every symbol in the list ends in `.NS` the scan runs on the NSE clock:
 India time, 9:15 to 15:30, the NSE's 2026 holiday list, the opening range from
 9:15, no new entries after 15:00. The symbols go to Yahoo unchanged.
-`scan.py universe` only knows the US lists, so give the NSE list yourself:
-`--symbols RELIANCE.NS,TCS.NS`, `--watchlist FILE`, or a `trader/universe.txt`
-with one `.NS` symbol a line. A list that mixes `.NS` and US symbols is
-refused: scan them separately.
+For the list of stocks, `scan.py universe --nse nifty100` downloads that NSE
+index's stocks (nifty50, nifty100, nifty200 or nifty500, from
+nsearchives.nseindia.com) and writes them to `trader/universe.txt` as `.NS`
+symbols. The Nifty 100 is a sensible start: big, heavily traded companies.
+`--symbols RELIANCE.NS,TCS.NS`, `--watchlist FILE` or a hand-made
+`trader/universe.txt` work too. A list that mixes `.NS` and US symbols is
+refused: scan them separately. Prices print as `Rs`.
 
 ## What it never does
 

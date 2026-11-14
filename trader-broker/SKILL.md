@@ -42,6 +42,7 @@ python3 "${CLAUDE_SKILL_DIR}/ticket.py" result --index 1 --status placed --broke
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" fill --symbol TSLA --side sell --qty 8 --price 370.04
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" flatten --symbol TSLA --qty 8
 python3 "${CLAUDE_SKILL_DIR}/ticket.py" log
+python3 "${CLAUDE_SKILL_DIR}/ticket.py" report                   # how the closed trades went, after costs
 ```
 
 `ticket.py` never talks to a broker. It renders tickets, checks that a reply
@@ -266,6 +267,22 @@ flat by 15:15. A stop-loss with a limit can be skipped in a fast fall: if the
 stop alert rings and the shares are still there, flatten. If Zerodha refuses
 an order for its tick size, read the stock's `tick_size` with
 `search_instruments` and make the plan again with `exit.py plan --tick X`.
+
+## How did it go: the report
+
+`ticket.py report` reads the fills in `trader/state/broker.json` and pairs
+each day's buys and sells per stock. For every closed trade it prints the
+result before costs, the costs (Zerodha's intraday charges for a `.NS` stock,
+none for a US one) and the result after costs, and the result in R when the
+entry's max loss was logged. Then the totals: trades won and lost, the win
+rate, the average win, the average loss and the biggest loss. `--days 7`
+keeps the last week, `--json` gives the numbers. A buy with no sell recorded
+is listed as still open. Practice fills and real fills share the log.
+
+Show it after the day's trades are closed, and whenever the user asks how
+they are doing. Read the after-costs line first: it is the only one that is
+real. A win rate alone says little; compare the average win with the average
+loss.
 
 ## What it never does
 

@@ -991,7 +991,7 @@ def cmd_watchlist(a):
     return 0 if any(r and r["status"] == "triggered" for _, r, _ in rows) else 1
 
 
-def main(argv=None):
+def _main(argv=None):
     ap = argparse.ArgumentParser(description="Entry Timer (trader-entry): watches a setup bar by bar.")
     sub = ap.add_subparsers(dest="cmd")
 
@@ -1034,6 +1034,40 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("entry.py: stopped.", file=sys.stderr)
         return 1
+
+
+
+class _Out(object):
+    """The real stream with two fixes where text is printed: on an NSE run "$" comes out
+    as "Rs ", and a character the console cannot print is replaced instead of crashing
+    (a Windows console in code page 1252 has no rupee sign, and Indian headlines do)."""
+    # ponytail: the currency sign is swapped at the print boundary. Thread a currency
+    # through the format strings if a third one ever shows up.
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        if NSE:
+            text = text.replace("$", "Rs ")
+        text = text.replace("₹", "Rs ")
+        try:
+            return self._stream.write(text)
+        except UnicodeEncodeError:
+            enc = getattr(self._stream, "encoding", None) or "ascii"
+            return self._stream.write(text.encode(enc, "replace").decode(enc))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def main(argv=None):
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _Out(out), _Out(err)
+    try:
+        return _main(argv)
+    finally:
+        sys.stdout, sys.stderr = out, err
 
 
 if __name__ == "__main__":

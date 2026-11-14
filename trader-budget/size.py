@@ -96,10 +96,36 @@ SETUP_WORDS = {"orb": "opening-range breakout", "flag": "flag", "bounce": "overs
 NSE_TIMES = {"no_entries_before": "09:30", "no_entries_after": "15:00", "flat_by": "15:15"}
 NSE = False
 PLACE = "New York"
+NSE_CHARGES = {  # Zerodha, equity intraday, from zerodha.com/charges (read 2026-11-15)
+    "brokerage_pct": 0.03, "brokerage_max": 20.0,   # per executed order, whichever is lower
+    "stt_sell_pct": 0.025,                           # securities transaction tax, on the sell
+    "exchange_pct": 0.00307,                         # the NSE's transaction charge, on both sides
+    "sebi_per_crore": 10.0,                          # Rs 10 for every Rs 1,00,00,000 traded
+    "stamp_buy_pct": 0.003,                          # stamp duty, on the buy
+    "gst_pct": 18.0,                                 # on brokerage + exchange + SEBI
+}
 
 
 class SizeError(Exception):
     pass
+
+
+def nse_charges(buy_value, sell_value, rates=None):
+    """What one intraday round trip (a buy order and a sell order) costs at Zerodha, in
+    rupees, line by line and in total. An estimate: the broker's contract note rounds
+    each line its own way. `rates` overrides NSE_CHARGES (the config's "nse": {"charges"})."""
+    r = dict(NSE_CHARGES)
+    r.update(rates or {})
+    b, s = float(buy_value), float(sell_value)
+    out = {"brokerage": sum(min(v * r["brokerage_pct"] / 100.0, r["brokerage_max"]) for v in (b, s) if v > 0),
+           "stt": s * r["stt_sell_pct"] / 100.0,
+           "exchange": (b + s) * r["exchange_pct"] / 100.0,
+           "sebi": (b + s) * r["sebi_per_crore"] / 1e7,
+           "stamp": b * r["stamp_buy_pct"] / 100.0}
+    out["gst"] = (out["brokerage"] + out["exchange"] + out["sebi"]) * r["gst_pct"] / 100.0
+    out = {k: round(v, 2) for k, v in out.items()}
+    out["total"] = round(sum(out.values()), 2)       # the lines add up to the total
+    return out
 
 
 # ---------------------------------------------------------------- market
@@ -441,7 +467,16 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     elif cost < float(c.get("min_order_usd") or 0) - 0.005:
         refusal = ("%d share%s of %s is %s, under your %s minimum order. No order."
                    % (qty, "" if qty == 1 else "s", sym, money(cost), money(c["min_order_usd"])))
+    costs = None
+    if NSE and qty > 0:     # what the broker and the taxes take from this order, either way it ends
+        nse = c.get("nse") if isinstance(c.get("nse"), dict) else {}
+        rates = nse.get("charges") if isinstance(nse.get("charges"), dict) else {}
+        win, lose = nse_charges(qty * ref, qty * target, rates), nse_charges(qty * ref, qty * stop, rates)
+        costs = {"broker": "Zerodha, equity intraday", "at_target": win["total"], "at_stop": lose["total"],
+                 "lines_at_target": win, "net_at_target": round(qty * reward_c / 100.0 - win["total"], 2),
+                 "net_at_stop": round(-loss - lose["total"], 2)}
     return {
+        **({"costs": costs} if costs else {}),
         "symbol": sym, "side": "buy", "setup": plan.get("setup", ""), "date": plan.get("date"),
         "entry_time": plan.get("entry_time", ""), "entry_plan": round_cent(entry_plan),
         "entry": ref, "entry_from": ref_from, "stop": stop, "target": target,
@@ -512,6 +547,19 @@ def plan_report(s, order, notes=()):
                  % (s["qty"], s["symbol"], money(s["cost"]), _price(s["entry"]), s["qty"],
                     _price(s["risk_per_share"]), money(s["max_loss"])))
     lines.append("A stop is an order, not a promise: in a fast market it can fill below %s." % _price(s["stop"]))
+    k = s.get("costs")
+    if k:
+        w = k["lines_at_target"]
+        lines.append("Costs (%s, about): %s if the target fills, %s if the stop fills. At the target that is "
+                     "brokerage %s, STT %s, exchange and SEBI %s, stamp duty %s, GST %s."
+                     % (k["broker"], money(k["at_target"]), money(k["at_stop"]), money(w["brokerage"]),
+                        money(w["stt"]), money(w["exchange"] + w["sebi"]), money(w["stamp"]), money(w["gst"])))
+        lines.append("After costs: %s%s at the target, -%s at the stop."
+                     % ("-" if k["net_at_target"] < 0 else "+", money(abs(k["net_at_target"])),
+                        money(-k["net_at_stop"])))
+        if s["max_loss_per_trade_usd"] and -k["net_at_stop"] > s["max_loss_per_trade_usd"] + 0.005:
+            lines.append("With costs the loss at the stop is %s, over your %s max loss per trade."
+                         % (money(-k["net_at_stop"]), money(s["max_loss_per_trade_usd"])))
     lines.append("")
     lines.append("Proposed bracket order (place_stock_order arguments, nothing has been placed):")
     how = "limit %s" % order["limit_price"] if order["type"] == "limit" else "market"
@@ -889,7 +937,7 @@ def run_weights(a, cfg):
     return 0
 
 
-def main(argv=None):
+def _main(argv=None):
     ap = argparse.ArgumentParser(description="Size a day trade to your budget and max loss (trader-budget).")
     ap.add_argument("--plan", default="trader/plan.json", help="the trade plan (default trader/plan.json)")
     ap.add_argument("--config", default="trader/config.json", help="rules (default trader/config.json)")
@@ -920,6 +968,40 @@ def main(argv=None):
     except SizeError as e:
         print("size.py: %s" % e, file=sys.stderr)
         return 1
+
+
+
+class _Out(object):
+    """The real stream with two fixes where text is printed: on an NSE run "$" comes out
+    as "Rs ", and a character the console cannot print is replaced instead of crashing
+    (a Windows console in code page 1252 has no rupee sign, and Indian headlines do)."""
+    # ponytail: the currency sign is swapped at the print boundary. Thread a currency
+    # through the format strings if a third one ever shows up.
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        if NSE:
+            text = text.replace("$", "Rs ")
+        text = text.replace("₹", "Rs ")
+        try:
+            return self._stream.write(text)
+        except UnicodeEncodeError:
+            enc = getattr(self._stream, "encoding", None) or "ascii"
+            return self._stream.write(text.encode(enc, "replace").decode(enc))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def main(argv=None):
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _Out(out), _Out(err)
+    try:
+        return _main(argv)
+    finally:
+        sys.stdout, sys.stderr = out, err
 
 
 if __name__ == "__main__":

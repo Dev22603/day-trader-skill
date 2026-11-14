@@ -40,6 +40,9 @@ clock: India time, 9:15 to 15:30, flat by 15:15 (or "flat_by" in the config's
 Its stop and target land on the NSE's tick, the price step a broker accepts:
 0.01 under 250, 0.05 to 1,000, 0.10 to 5,000, 0.50 to 10,000, 1.00 to 20,000,
 5.00 above. The stop rounds down to it, an R target up. --tick X overrides it.
+A .NS plan also shows the result after costs: Zerodha's intraday brokerage and
+the taxes on one buy and one sell (NSE_CHARGES below, or "charges" in the
+config's "nse" block), so the reward:risk you see is the one you would keep.
 
 A stop is a plan, not a guarantee: a gap or a fast market can fill past it.
 Exit codes: plan 0 = a plan, 1 = refused or an error. show 0 = a plan exists.
@@ -296,6 +299,44 @@ def nse_tick(price):
         if p <= top:
             return Decimal(tick)
     return Decimal("5.00")
+
+
+NSE_CHARGES = {  # Zerodha, equity intraday, from zerodha.com/charges (read 2026-11-15)
+    "brokerage_pct": 0.03, "brokerage_max": 20.0,   # per executed order, whichever is lower
+    "stt_sell_pct": 0.025,                           # securities transaction tax, on the sell
+    "exchange_pct": 0.00307,                         # the NSE's transaction charge, on both sides
+    "sebi_per_crore": 10.0,                          # Rs 10 for every Rs 1,00,00,000 traded
+    "stamp_buy_pct": 0.003,                          # stamp duty, on the buy
+    "gst_pct": 18.0,                                 # on brokerage + exchange + SEBI
+}
+
+
+def nse_charges(buy_value, sell_value, rates=None):
+    """What one intraday round trip (a buy order and a sell order) costs at Zerodha, in
+    rupees, line by line and in total. An estimate: the broker's contract note rounds
+    each line its own way. `rates` overrides NSE_CHARGES (the config's "nse": {"charges"})."""
+    r = dict(NSE_CHARGES)
+    r.update(rates or {})
+    b, s = float(buy_value), float(sell_value)
+    out = {"brokerage": sum(min(v * r["brokerage_pct"] / 100.0, r["brokerage_max"]) for v in (b, s) if v > 0),
+           "stt": s * r["stt_sell_pct"] / 100.0,
+           "exchange": (b + s) * r["exchange_pct"] / 100.0,
+           "sebi": (b + s) * r["sebi_per_crore"] / 1e7,
+           "stamp": b * r["stamp_buy_pct"] / 100.0}
+    out["gst"] = (out["brokerage"] + out["exchange"] + out["sebi"]) * r["gst_pct"] / 100.0
+    out = {k: round(v, 2) for k, v in out.items()}
+    out["total"] = round(sum(out.values()), 2)       # the lines add up to the total
+    return out
+
+
+def nse_rates(path):
+    """The config's own charge rates, if it has an "nse": {"charges": {...}} block."""
+    if not path or not os.path.exists(path):
+        return {}
+    doc = read_json(path, "config")
+    nse = doc.get("nse") if isinstance(doc, dict) else None
+    rates = nse.get("charges") if isinstance(nse, dict) else None
+    return rates if isinstance(rates, dict) else {}
 
 
 def to_tick(x, tick, rounding):
@@ -716,6 +757,15 @@ def build_plan(a, now_utc):
         plan["atr_bars"] = atr_n
     if tick is not None:
         plan["tick"] = float(tick)
+    if NSE:     # what the broker and the taxes take, for one share (it scales with the shares)
+        rates = nse_rates(a.config)
+        win = nse_charges(plan["entry"], plan["target"], rates)["total"]
+        lose = nse_charges(plan["entry"], plan["stop"], rates)["total"]
+        net_win = round(plan["target"] - plan["entry"] - win, 2)
+        net_loss = round(plan["entry"] - plan["stop"] + lose, 2)
+        plan["costs"] = {"broker": "Zerodha, equity intraday", "per_share_at_target": win,
+                         "per_share_at_stop": lose, "net_at_target": net_win, "net_at_stop": -net_loss,
+                         "reward_risk_after_costs": round(net_win / net_loss, 2)}
     warnings = []
     if flat_note:
         warnings.append("Flat-by %s: %s." % (flat_by, flat_note))
@@ -751,6 +801,13 @@ def describe(plan):
     out.append("  Target        %s  %s" % (money(plan["target"]), plan["target_label"]))
     out.append("  Risk a share  %s (%s%% of the entry)" % (money(plan["risk_per_share"]), pct))
     out.append("  Reward:risk   %s" % ratio(plan["reward_risk"]))
+    k = plan.get("costs")
+    if k:
+        out.append("  After costs   about %s a share for the buy and the sell (%s): %s%s at the target,"
+                   % (money(k["per_share_at_target"]), k["broker"], "-" if k["net_at_target"] < 0 else "+",
+                      money(abs(k["net_at_target"]))))
+        out.append("                -%s at the stop, reward:risk %s"
+                   % (money(-k["net_at_stop"]), ratio(k["reward_risk_after_costs"])))
     if plan.get("tick"):
         out.append("  Tick          %s: the stop and the target sit on the exchange's price step "
                    "(--tick X if your broker says otherwise)" % ("%.2f" % plan["tick"]))
@@ -815,7 +872,7 @@ def cmd_show(a):
     return 0
 
 
-def main(argv=None):
+def _main(argv=None):
     ap = argparse.ArgumentParser(description="Exit Planner (trader-exit): the stop and target before the entry.")
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("plan", help="set the stop and target")
@@ -855,6 +912,40 @@ def main(argv=None):
     except PlanError as e:
         print("exit.py: %s" % e, file=sys.stderr)
         return 1
+
+
+
+class _Out(object):
+    """The real stream with two fixes where text is printed: on an NSE run "$" comes out
+    as "Rs ", and a character the console cannot print is replaced instead of crashing
+    (a Windows console in code page 1252 has no rupee sign, and Indian headlines do)."""
+    # ponytail: the currency sign is swapped at the print boundary. Thread a currency
+    # through the format strings if a third one ever shows up.
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        if NSE:
+            text = text.replace("$", "Rs ")
+        text = text.replace("₹", "Rs ")
+        try:
+            return self._stream.write(text)
+        except UnicodeEncodeError:
+            enc = getattr(self._stream, "encoding", None) or "ascii"
+            return self._stream.write(text.encode(enc, "replace").decode(enc))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def main(argv=None):
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _Out(out), _Out(err)
+    try:
+        return _main(argv)
+    finally:
+        sys.stdout, sys.stderr = out, err
 
 
 if __name__ == "__main__":
