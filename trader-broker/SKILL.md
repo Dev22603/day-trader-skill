@@ -143,8 +143,10 @@ that draft orders to Needs approval too.
 
 1. `ticket.py show`. Only READY tickets go to the user. A ticket that is NOT
    READY or BLOCKED goes back to `/trader-risk`.
-2. Show ONE ticket and ask: "Place this order? Reply yes or no." One order
-   per question. Never offer "yes to all".
+2. Show ONE ticket, and with it what `/trader-guard` says about the same
+   order (`guard.py check --orders trader/orders.json`): the risk level, the
+   worst case and every HIGH or EXTREME warning. Then ask: "Place this order?
+   Reply yes or no." One order per question. Never offer "yes to all".
 3. Run `ticket.py approve --index N --reply "<the user's reply, word for word>"`.
    If it prints "Not recorded", the reply was not an explicit yes for this
    order (for example "sure", "yes to all", or a yes that names a different

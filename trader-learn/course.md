@@ -1,14 +1,15 @@
 # The course
 
-38 short lessons, from zero. Every lesson has a goal, the points to teach, one
+43 short lessons, from zero. Every lesson has a goal, the points to teach, one
 worked example in rupees, check questions with their answers, and where the
 idea shows up in the other skills. `learn.py` reads this file: keep the shape
 (`### ID Title`, `Goal:`, `- point`, `Example:`, `Check:`, `In the pack:`).
 
 Facts about India that can change were checked on 2026-11-15: the NSE session
-times (nseindia.com), Zerodha's equity intraday charges and the 15:20
-square-off (zerodha.com/charges and support.zerodha.com), the NSE tick sizes
-(NSE circular 33/2025), SEBI's study of intraday traders (press release
+times (nseindia.com), Zerodha's charges, MTF interest, pledge fee and the
+15:20 square-off (zerodha.com/charges), its rules on pledging and on the
+delivery of stock contracts at expiry (support.zerodha.com), the NSE tick
+sizes (NSE circular 33/2025), SEBI's study of intraday traders (press release
 13/2024) and of F&O traders (July 2025), and how intraday profit is taxed
 (Income-tax Act, section 43(5)). Check them again before relying on a number.
 Nothing here is financial or tax advice.
@@ -408,7 +409,7 @@ Check:
 1. With 4 times leverage, the share falls 5%. How much of your own money is lost? :: About 20%.
 2. What is pledging? :: Giving your shares to the broker as security in return for margin to trade with.
 3. Out of 10 individual F&O traders, about how many lost money in SEBI's study? :: About 9.
-In the pack: leverage is off: "allow_margin", "allow_options" and "allow_short" are false, and trader-risk blocks such orders. Leave them off while you learn.
+In the pack: leverage is off: "allow_margin", "allow_options" and "allow_short" are false, and trader-risk blocks such orders. Leave them off while you learn. Module K goes through futures, options, MTF and pledging one by one, and trader-guard warns before any such trade.
 
 ## I Costs and tax in India
 
@@ -492,3 +493,72 @@ Check:
 1. You lost twice this morning and want to double the size on the next trade. What is this called? :: Revenge trading.
 2. Which line of the report tells you what really happened to your money? :: The after-costs line.
 In the pack: trader-risk enforces max_daily_loss_usd and max_trades_per_day so that a bad day stays a small one.
+
+## K Futures, options and borrowed money
+
+### K1 Futures
+Goal: know what a future is and why a small move is a big loss.
+- A future is a contract to buy or sell a share or an index at a fixed price on a set date. You do not pay the full value: you put down a margin, a fraction of it.
+- Futures trade in lots: a fixed number of shares per contract, set by the exchange. The lot size changes from time to time: read it in Kite, never from memory.
+- Each day the gain or loss on the whole contract is added to or taken from your account. This is called mark to market.
+- Because the contract is worth many times your margin, the loss can be bigger than the money you put down.
+Example: One lot of 65 of an index future at 24,550 is a contract worth 65 x 24,550 = Rs 15,95,750. A fall of 1% costs Rs 15,957.50, whatever margin you put down.
+Check:
+1. A future's lot is 500 shares and the price is Rs 1,000. What is one contract worth? :: Rs 5,00,000.
+2. That contract's price falls 2%. How much do you lose? :: Rs 10,000.
+3. Can you lose more than the margin you put down on a future? :: Yes. The loss is on the whole contract value.
+In the pack: the pack does not trade futures. trader-guard shows what a 1%, 2%, 5% and 10% move would cost before you place one yourself.
+
+### K2 Options: calls and puts
+Goal: know what an option is and what the buyer pays for.
+- An option is a contract that gives its buyer the right, but not the duty, to buy or sell at a fixed price (the strike) until a set date (the expiry).
+- A call is the right to buy: it gains when the price rises. A put is the right to sell: it gains when the price falls.
+- The price of the option is the premium. The buyer pays it and can never lose more than that.
+- Options also trade in lots, and the premium is quoted per share: the cost is premium x lot size x lots.
+Example: You buy one lot (65) of a 24,600 call at a premium of Rs 120: you pay 65 x 120 = Rs 7,800. If the index is at 24,800 at expiry the option is worth 200 x 65 = Rs 13,000, a profit of Rs 5,200. If it is at 24,600 or lower, the option is worth nothing and the Rs 7,800 is gone.
+Check:
+1. You expect a share to fall. Which option gains from that, a call or a put? :: A put.
+2. A premium is Rs 40 and the lot is 250. What does one lot cost? :: Rs 10,000.
+3. What is the most the buyer of an option can lose? :: The premium paid.
+In the pack: trader-guard takes --option call or put, --strike, --price (the premium) and --lot-size, and shows the premium as the worst case.
+
+### K3 Buying and selling options
+Goal: know why the two sides of an option carry very different risks.
+- The buyer pays the premium. The loss is limited to it, but an option loses a little value every day (time decay) and is worth nothing at expiry unless the price has passed the strike. You can be right about the direction and still lose.
+- The seller (also called the writer) receives the premium and keeps it if the option expires worthless. That happens often, which is what makes selling look easy.
+- But the seller must pay whatever the option becomes worth. For a call sold, there is no limit to that. For a put sold, it can be many times the premium.
+- So the seller needs a large margin, and can be asked for more when the price moves against them.
+Example: You sell one lot of 500 of a 1,300 put at Rs 12 and receive Rs 6,000. If the share is at 1,200 at expiry you must pay (1,300 - 1,200) x 500 = Rs 50,000: a loss of Rs 44,000 to earn Rs 6,000.
+Check:
+1. Who can lose more than the premium, the buyer or the seller of an option? :: The seller.
+2. The price has not moved for a week. What has happened to the value of an option you bought? :: It has fallen: time decay.
+3. You sold a call and the price doubles. Is your loss limited? :: No. A sold call has no limit to its loss.
+In the pack: trader-guard marks an uncovered option sale EXTREME, and shows the most it can make next to the most it can lose.
+
+### K4 Margin, MTF and pledging
+Goal: know three ways of trading with more than your own money, and what each costs.
+- Margin is the money the broker blocks as security for a position. If the position loses, the broker asks for more (a margin call), or closes it at whatever the price is.
+- MTF (margin trading facility): you buy shares for delivery and the broker lends part of the price. Zerodha charges 0.04% a day (Rs 40 per lakh) on what it lends, and the shares stay pledged to it.
+- Pledging: you hand shares you own to the broker as security and get margin to trade with, less a cut called the haircut. Each pledge request costs Rs 30 plus GST per share name.
+- For futures and options, half the margin must be in cash: a shortfall held overnight is charged 0.035% a day plus GST.
+- In all three, a fall in price hurts twice: the trade loses, and the security behind it shrinks. The broker can sell your shares to cover what you owe.
+Example: You buy shares worth Rs 1,33,000 with Rs 40,000 of your own money through MTF. The broker lends Rs 93,000: about Rs 37.20 of interest a day, Rs 1,116 a month, whether the shares rise or fall.
+Check:
+1. What is a margin call? :: The broker asking for more money because the position's losses have used up the margin.
+2. You pledge shares and they fall 10%. What happens to your margin? :: It falls too.
+3. The broker lends you Rs 2,00,000 under MTF at 0.04% a day. What is the interest for one day? :: Rs 80.
+In the pack: borrowed money is off in the pack ("allow_margin": false). trader-guard has --kind mtf and --kind pledge for what you do outside it.
+
+### K5 Expiry and delivery
+Goal: know what happens when a contract ends.
+- Every future and option has an expiry date. After it the contract no longer exists.
+- An option is in the money when using it would pay: a call whose strike is below the price, a put whose strike is above. Otherwise it is out of the money and expires worthless.
+- Index contracts are settled in cash: only the difference in money changes hands.
+- Stock futures and in-the-money stock options are settled by delivery: at expiry you must pay for, or hand over, the whole lot of shares.
+- The margin on stock contracts rises from four days before expiry, and the broker may close the position for a fee. Close stock contracts before the expiry week.
+Example: You hold one lot of 500 of a 1,300 call on a share that is at 1,330 at expiry. It is in the money, so you must buy 500 shares at 1,300: Rs 6,50,000, from an option that cost a few thousand.
+Check:
+1. A call has a strike of 500 and the share is at 480 at expiry. What is the option worth? :: Nothing: it is out of the money.
+2. Which are settled by handing over shares at expiry, index contracts or stock contracts? :: Stock contracts.
+3. Why close a stock option before the expiry week? :: Margins rise, and at expiry you may have to pay for or deliver the whole lot.
+In the pack: trader-guard counts the days to --expiry and warns from four days out on a stock contract, more strongly in the last two.

@@ -96,9 +96,29 @@ reads this file: keep the shape `- **word** (other names): meaning. Lesson ID.`
 - **max loss per trade** (max loss, daily loss limit, max daily loss): The most you accept to lose on one trade; the daily limit is the most in one day. Lesson H3.
 - **win rate** (strike rate, hit rate): The share of your trades that win. Lesson H4.
 - **expectancy** (edge, average result): The average result of a trade: win rate times average win, minus loss rate times average loss. Lesson H4.
-- **leverage** (trading margin, margin money, margin call, MTF, margin trading facility): Trading with money borrowed from the broker. It multiplies gains and losses; you can lose more than you put in. Lesson H5.
-- **futures and options** (F&O, FNO, futures, options, derivatives, call, put, lot): Contracts with leverage built in. About 9 in 10 individual traders lose money in them. Lesson H5.
-- **pledging** (pledge, collateral, collateral margin, haircut): Giving your own shares to the broker as security in return for margin. The broker can sell them if the trade goes wrong. Lesson H5.
+- **leverage** (leveraged, gearing): Trading with money borrowed from the broker. It multiplies gains and losses; you can lose more than you put in. Lesson H5.
+- **futures and options** (F&O, FNO, derivatives, derivative): Contracts with leverage built in. About 9 in 10 individual traders lose money in them. Lesson H5.
+
+## Futures, options and borrowed money
+
+- **future** (futures, futures contract): A contract to buy or sell a share or index at a fixed price on a set date, with only a margin put down. The loss is on the whole contract. Lesson K1.
+- **lot** (lot size, contract size): The fixed number of shares in one futures or options contract, set by the exchange. It changes: read it in Kite. Lesson K1.
+- **mark to market** (MTM, M2M, marked to market): Each day's gain or loss on a futures position being added to or taken from your account. Lesson K1.
+- **option** (options, call, put, call option, put option): The right, not the duty, to buy (a call) or sell (a put) at a fixed price until a set date. Kite marks calls CE and puts PE. Lesson K2.
+- **premium** (option premium, option price): The price of an option. The buyer pays it and cannot lose more than it. Lesson K2.
+- **strike** (strike price): The fixed price at which an option lets its buyer buy or sell. Lesson K2.
+- **option buyer** (buying options, option buying, long option): The side that pays the premium. The loss is limited to it, but time decay works against the buyer. Lesson K3.
+- **option seller** (option writer, writing options, option selling, selling options, short option): The side that receives the premium. The gain is limited to it; the loss is not. Lesson K3.
+- **time decay** (theta, decay): The value an option loses each day just because expiry is nearer. Lesson K3.
+- **trading margin** (margin money, margin blocked, margin requirement): The money the broker blocks as security for a position. Not the same as a profit margin. Lesson K4.
+- **margin call** (margin shortfall): The broker asking for more money because losses have used up the margin; if you cannot pay, it closes the position. Lesson K4.
+- **MTF** (margin trading facility, buying on margin, margin funding): Buying shares for delivery with part of the price lent by the broker, which charges interest every day. Lesson K4.
+- **pledging** (pledge, collateral, collateral margin, pledged shares): Giving your own shares to the broker as security in return for margin. The broker can sell them if you end up owing it money. Lesson K4.
+- **haircut**: The cut taken off the value of pledged shares when working out the margin they give. Lesson K4.
+- **expiry** (expiry date, expiry day, expiration): The date a future or an option ends. Lesson K5.
+- **in the money** (ITM, out of the money, OTM, at the money, ATM): An option is in the money when using it would pay; out of the money when it would not, and then it expires worthless. Lesson K5.
+- **physical settlement** (physical delivery, delivery at expiry, compulsory delivery): Stock futures and in-the-money stock options end with the whole lot of shares being paid for or handed over, not with cash. Lesson K5.
+- **F&O ban** (ban period, ban list): A share whose futures and options positions have reached the exchange's limit: no new positions are allowed until they come down. Lesson K5.
 
 ## Costs and tax
 

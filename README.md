@@ -1,6 +1,6 @@
 # The Day Trader skill
 
-12 Claude skills for day trading: scan thousands of charts, track breaking news, time every entry and exit, replay every outcome before you risk a dollar, and learn the basics from zero.
+13 Claude skills for day trading: scan thousands of charts, track breaking news, time every entry and exit, replay every outcome before you risk a dollar, learn the basics from zero, and get warned before a risky trade.
 
 Free, MIT, no signup, no API key. The tools are plain Python that read free
 public data: Yahoo Finance charts, Nasdaq Trader's symbol lists, SEC EDGAR
@@ -57,11 +57,13 @@ The tools need Python 3.8 or newer. Nothing to pip install. The SEC tools
 email in `trader/config.json` (`"sec_user_agent": "Your Name you@example.com"`)
 or in the `SEC_USER_AGENT` environment variable.
 
-## The twelve
+## The thirteen
 
-New to the stock market? Start with `/trader-learn`: 38 short lessons from
+New to the stock market? Start with `/trader-learn`: 43 short lessons from
 "what is revenue" to "how to read a ticket", and a plain answer to "what is
-X?" for every word the other skills use.
+X?" for every word the other skills use. And before any trade, in this pack
+or straight at your broker, `/trader-guard` says what can go wrong in rupees:
+shares, borrowed money, futures, options and pledging.
 
 | command | job | what it does |
 | --- | --- | --- |
@@ -77,6 +79,7 @@ X?" for every word the other skills use.
 | `/trader-analyst` | Earnings Analyst | Reads earnings reports and sums up what changed. |
 | `/trader-pelosi` | Pelosi Tracker | Reads Congress's stock-trade disclosures the minute they are filed. |
 | `/trader-learn` | Beginner's Course | Teaches the basics from zero, in plain words with rupee examples, and explains any word the other skills use. |
+| `/trader-guard` | Risk Warner | Warns before any trade: the worst case in rupees and every risk that applies, for shares, borrowed money, futures, options and pledging. |
 
 ## How to use it
 
@@ -259,6 +262,7 @@ trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, facts.py, metrics.example.json
 trader-pelosi/      SKILL.md, ptr.py
 trader-learn/       SKILL.md, learn.py, course.md, glossary.md
+trader-guard/       SKILL.md, guard.py
 tests/              unittest suite + offline fixtures
 ```
 

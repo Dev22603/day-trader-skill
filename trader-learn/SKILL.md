@@ -20,7 +20,7 @@ The Beginner's Course is for someone who is new to the stock market, to
 commerce and to economics. Nothing is too basic: the first lesson is what
 revenue is. It does two jobs:
 
-1. **The course**: 38 short lessons in order, with progress kept.
+1. **The course**: 43 short lessons in order, with progress kept.
 2. **Ask anything**: a plain answer to "what is X?" at any moment, in the
    middle of any other skill.
 
@@ -41,8 +41,8 @@ do the teaching.
 
 | file | what |
 | --- | --- |
-| `course.md` (this folder) | the 38 lessons: goal, points, a rupee example, check questions with answers |
-| `glossary.md` (this folder) | about 90 words, one plain line each, with the lesson that teaches it |
+| `course.md` (this folder) | the 43 lessons: goal, points, a rupee example, check questions with answers |
+| `glossary.md` (this folder) | about 100 words, one plain line each, with the lesson that teaches it |
 | `trader/state/learn.json` | which lessons are done, and the score on the check questions |
 
 ## The course
@@ -59,9 +59,12 @@ do the teaching.
 | H Risk | H1 to H5 | stop, target, R, position size, win rate and expectancy, leverage and F&O |
 | I Costs and tax in India | I1 to I3 | every Zerodha charge, gross and net result, tax on intraday profit |
 | J Using this pack | J1 to J3 | the flow of the skills, practice mode, the ticket, the report, usual mistakes |
+| K Futures, options and borrowed money | K1 to K5 | futures, calls and puts, buying and selling options, margin, MTF, pledging, expiry and delivery |
 
 A learner in a hurry to use the pack can take C, D, G, H, I and J first and
-come back to A, B, E and F. Say so if they ask; otherwise go in order.
+come back to A, B, E and F. Say so if they ask; otherwise go in order. Module
+K is for understanding the warnings of `/trader-guard`: teach it before the
+user touches futures, options, MTF or pledging, whenever that comes up.
 
 ## How to teach a lesson
 

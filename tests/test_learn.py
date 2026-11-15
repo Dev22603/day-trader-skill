@@ -30,7 +30,7 @@ def run(argv):
 
 class Course(unittest.TestCase):
     def test_every_lesson_is_complete(self):
-        self.assertEqual(len(LESSONS), 38)
+        self.assertEqual(len(LESSONS), 43)
         ids = [l["id"] for l in LESSONS]
         self.assertEqual(len(set(ids)), len(ids))
         self.assertEqual(ids[0], "A1")                                     # it starts with revenue
@@ -41,12 +41,12 @@ class Course(unittest.TestCase):
             for q, a in l["checks"]:
                 self.assertTrue(q.endswith("?") and a, (l["id"], q))
 
-    def test_ten_modules_in_order(self):
+    def test_eleven_modules_in_order(self):
         mods = []
         for l in LESSONS:
             if l["module"] not in mods:
                 mods.append(l["module"])
-        self.assertEqual([m.split()[0] for m in mods], list("ABCDEFGHIJ"))
+        self.assertEqual([m.split()[0] for m in mods], list("ABCDEFGHIJK"))
         for l in LESSONS:
             self.assertEqual(l["id"][0], l["module"][0], l["id"])          # lesson H3 sits in module H
 
@@ -141,7 +141,7 @@ class Keeper(unittest.TestCase):
         code, out, _ = self.go("list")
         self.assertIn("  [x] A1  Revenue: the money that comes in  (2/2)", out)
         self.assertIn("  [ ] A2  Gross profit", out)
-        self.assertIn("1 of 38 lessons done.", out)
+        self.assertIn("1 of 43 lessons done.", out)
 
     def test_show_term_and_the_end_of_the_course(self):
         code, out, _ = self.go("show", "h3")
@@ -160,7 +160,7 @@ class Keeper(unittest.TestCase):
             self.go("done", l["id"])
         code, out, _ = self.go("next")
         self.assertEqual(code, 1)
-        self.assertIn("The course is finished: all 38 lessons are done.", out)
+        self.assertIn("The course is finished: all 43 lessons are done.", out)
 
     def test_plain_errors(self):
         code, _, err = self.go("show", "Z9")
@@ -178,8 +178,8 @@ class Skill(unittest.TestCase):
     def test_the_skill_file_matches_the_course(self):
         with open(os.path.join(ROOT, "trader-learn", "SKILL.md"), encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn("38 short lessons", text)
-        for mod in "ABCDEFGHIJ":
+        self.assertIn("43 short lessons", text)
+        for mod in "ABCDEFGHIJK":
             last = max(int(l["id"][1:]) for l in LESSONS if l["id"][0] == mod)
             self.assertIn("| %s1 to %s%d |" % (mod, mod, last), text, mod)   # the course table is right
         self.assertIn("not financial advice", text.lower())
